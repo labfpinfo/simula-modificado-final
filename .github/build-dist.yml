@@ -1,0 +1,64 @@
+# Regenera la carpeta dist/ en cada push a main.
+#
+# Flujo:
+#   1. Ejecuta la suite completa de tests — si algo falla, dist/ NO se toca
+#      (los alumnos nunca reciben una build rota).
+#   2. Ejecuta `npm run build-dist`.
+#   3. Si dist/ cambió, lo commitea de vuelta a main con el bot de Actions.
+#   4. Sube además un ZIP de dist/ como artefacto descargable del run.
+
+name: Build dist
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-dist-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-dist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build dist/
+        run: npm run build-dist
+
+      - name: Commit dist/ if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/
+          if git diff --cached --quiet; then
+            echo "dist/ sin cambios — nada que commitear."
+          else
+            git commit -m "ci: actualizar dist/ [skip ci]"
+            git push
+          fi
+
+      - name: Upload dist as artifact (ZIP)
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulador-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

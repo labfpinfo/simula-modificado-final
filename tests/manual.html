@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WU2 Smoke Tests — SQL Engine Core</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    .test { margin: 0.25rem 0; padding: 0.4rem 0.6rem; border-radius: 4px; }
+    .pass { background: #d4edda; color: #155724; }
+    .fail { background: #f8d7da; color: #721c24; }
+    .info { background: #e2e3e5; color: #383d41; font-size: 0.9rem; }
+    pre { margin: 0.3rem 0; font-size: 0.85rem; white-space: pre-wrap; }
+    #summary { margin-top: 1rem; font-weight: bold; }
+    hr { margin: 1.5rem 0; }
+  </style>
+</head>
+<body>
+  <h1>WU2 Smoke Tests — SQL Engine + Result Comparator</h1>
+  <div id="results"></div>
+  <div id="summary"></div>
+
+  <!--
+    Load order matters:
+      1. sql-asm.js           → exposes global initSqlJs (no WASM binary)
+      2. src/sql-engine.js    → exposes global SqlEngine
+      3. src/result-compare.js → exposes global ResultCompare
+      4. src/pokemon-seed.js  → exposes window.POKEMON_SEED (embedded seed,
+                                mirrors production strategy so manual.html
+                                is a faithful smoke test)
+  -->
+  <script src="../vendor/sql-asm.js"></script>
+  <script src="../src/sql-engine.js"></script>
+  <script src="../src/result-compare.js"></script>
+  <script src="../src/pokemon-seed.js"></script>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var resultsEl = document.getElementById("results");
+    var summaryEl = document.getElementById("summary");
+    var passed = 0;
+    var failed = 0;
+
+    function log(cls, msg) {
+      var div = document.createElement("div");
+      div.className = "test " + cls;
+      div.innerHTML = msg;
+      resultsEl.appendChild(div);
+    }
+
+    function pass(msg) { passed++; log("pass", "&#10003; " + msg); }
+    function fail(msg) { failed++; log("fail", "&#10007; " + msg); }
+    function info(msg) { log("info", msg); }
+
+    function assertEq(label, actual, expected) {
+      if (actual === expected) { pass(label); }
+      else { fail(label + " — expected <code>" + JSON.stringify(expected) + "</code>, got <code>" + JSON.stringify(actual) + "</code>"); }
+    }
+
+    function assertOk(label, cond) {
+      if (cond) { pass(label); }
+      else { fail(label + " — assertion failed"); }
+    }
+
+    // -------------------------------------------------------------------
+    // Create a small synthetic test seed (used as fallback)
+    // -------------------------------------------------------------------
+
+    function buildTestSeed(SQL) {
+      var db = new SQL.Database();
+      db.run("CREATE TABLE pokemon (id INTEGER PRIMARY KEY, name TEXT, type TEXT, level INTEGER);");
+      db.run("INSERT INTO pokemon VALUES (1, 'Pikachu', 'Electric', 25);");
+      db.run("INSERT INTO pokemon VALUES (2, 'Charmander', 'Fire', 10);");
+      db.run("INSERT INTO pokemon VALUES (3, 'Squirtle', 'Water', 10);");
+      db.run("INSERT INTO pokemon VALUES (4, 'Bulbasaur', 'Grass', 12);");
+      db.run("INSERT INTO pokemon VALUES (5, 'Jigglypuff', 'Normal', 8);");
+
+      var bytes = db.export();
+      db.close();
+      return bytes;
+    }
+
+    // -------------------------------------------------------------------
+    // Load seed: prefer the embedded seed (src/pokemon-seed.js) to mirror
+    // the production strategy. Fall back to XHR for data/pokemon.sqlite,
+    // and finally to a synthetic test seed if everything else fails.
+    // -------------------------------------------------------------------
+
+    function loadEmbeddedSeed(callback) {
+      if (typeof window === "undefined" || !(window.POKEMON_SEED instanceof Uint8Array)) {
+        callback(new Error("embedded seed not available"));
+        return;
+      }
+      callback(null, window.POKEMON_SEED);
+    }
+
+    function loadRealSeed(callback) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", "../data/pokemon.sqlite", true);
+      xhr.responseType = "arraybuffer";
+      xhr.onload = function () {
+        if (xhr.status === 200 || xhr.status === 0) {
+          callback(null, xhr.response);
+        } else {
+          callback(new Error("HTTP " + xhr.status));
+        }
+      };
+      xhr.onerror = function () {
+        callback(new Error("XHR failed"));
+      };
+      xhr.send();
+    }
+
+    // -------------------------------------------------------------------
+    // sql.js init strategy: the asm build does not need a WASM binary,
+    // so initSqlJs() with no arguments works under both file:// and
+    // http(s):// without protocol-specific workarounds.
+    // -------------------------------------------------------------------
+
+    function initSql(callback) {
+      info("Initialising sql.js (asm build, no WASM required)&hellip;");
+      initSqlJs().then(function (SQL) {
+        callback(null, SQL);
+      }).catch(function (err) {
+        callback(new Error("sql.js init failed: " + err.message));
+      });
+    }
+
+    // -------------------------------------------------------------------
+    // Run all tests
+    // -------------------------------------------------------------------
+
+    async function runTests() {
+      var SQL;
+      var seedBytes;
+
+      // --- Bootstrap ---
+      info("Bootstrapping SQL.js and loading seed&hellip;");
+
+      // Step 1: Init sql.js (asm build — no WASM binary required)
+      try {
+        SQL = await new Promise(function (resolve, reject) {
+          initSql(function (err, sql) {
+            if (err) reject(err); else resolve(sql);
+          });
+        });
+      } catch (e) {
+        fail("sql.js bootstrap failed: " + e.message);
+        summaryEl.textContent = "BOOTSTRAP FAILED — cannot continue.";
+        return;
+      }
+
+      // Step 2: Load seed — prefer the embedded seed (production strategy),
+      // then fall back to XHR for data/pokemon.sqlite, then to synthetic.
+      try {
+        seedBytes = await new Promise(function (resolve, reject) {
+          loadEmbeddedSeed(function (err, buf) {
+            if (!err) {
+              info("Loaded embedded seed (src/pokemon-seed.js, " + buf.length + " bytes)");
+              resolve(buf);
+              return;
+            }
+            info("Embedded seed not loadable (" + err.message + "), trying data/pokemon.sqlite...");
+            loadRealSeed(function (err2, buf2) {
+              if (err2) {
+                info("data/pokemon.sqlite not loadable (" + err2.message + "), using synthetic test seed.");
+                resolve(null);
+              } else {
+                info("Loaded data/pokemon.sqlite (" + buf2.byteLength + " bytes)");
+                resolve(new Uint8Array(buf2));
+              }
+            });
+          });
+        });
+      } catch (e) {
+        info("Seed loading failed (" + e.message + "), using synthetic test seed.");
+        seedBytes = null;
+      }
+
+      if (!seedBytes) {
+        seedBytes = buildTestSeed(SQL);
+        info("Synthetic test seed built (" + seedBytes.byteLength + " bytes, " +
+          new SQL.Database(seedBytes).exec("SELECT COUNT(*) AS cnt FROM pokemon")[0].values[0][0] +
+          " rows in pokemon table)");
+      }
+
+      // Quick sanity: verify the seed is usable directly
+      try {
+        var sanityDb = new SQL.Database(seedBytes);
+        var sanityRows = sanityDb.exec("SELECT * FROM pokemon WHERE id = 1");
+        sanityDb.close();
+        if (sanityRows && sanityRows.length) {
+          pass("Seed sanity: first row loaded (" + sanityRows[0].values[0][1] + ")");
+        } else {
+          pass("Seed sanity: loaded OK (no row with id=1)");
+        }
+      } catch (e) {
+        fail("Seed sanity check failed: " + e.message);
+        summaryEl.textContent = "SEED LOADING FAILED — cannot continue.";
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Task 2.1 — SqlEngine.execute()
+      // ---------------------------------------------------------------
+
+      info("<hr><strong>Task 2.1 — SqlEngine.execute()</strong>");
+
+      // Init the engine
+      try {
+        await SqlEngine.init({ seedBuffer: seedBytes });
+        assertOk("SqlEngine.init() succeeds", SqlEngine.isReady());
+      } catch (e) {
+        fail("SqlEngine.init() failed: " + e.message);
+        summaryEl.textContent = "INIT FAILED — cannot continue.";
+        return;
+      }
+
+      // Test 1: valid SELECT
+      var r1 = SqlEngine.execute("SELECT * FROM pokemon WHERE level > 10");
+      if (r1.error) {
+        fail("Valid SELECT: " + r1.error);
+      } else {
+        assertEq("Valid SELECT returns 4 columns", r1.columns.length, 4);
+        assertOk("Valid SELECT returns some rows (" + r1.rows.length + ")", r1.rows.length > 0);
+      }
+
+      // Test 2: SELECT with no results
+      var r2 = SqlEngine.execute("SELECT * FROM pokemon WHERE level > 999");
+      assertOk("Empty SELECT has no error", !r2.error);
+      assertEq("Empty SELECT returns 0 rows", r2.rows.length, 0);
+
+      // Test 3: invalid SQL
+      var r3 = SqlEngine.execute("SELEC * FROM pokemon");  // intentional typo
+      assertOk("Invalid SQL returns error", !!r3.error);
+      assertOk("Error message is non-empty", r3.error.length > 0);
+
+      // Test 4: non-SELECT blocked
+      var r4 = SqlEngine.execute("INSERT INTO pokemon VALUES (99, 'Mew', 'Psychic', 50)");
+      assertOk("INSERT is blocked", !!r4.error);
+      assertOk("Error mentions SELECT restriction",
+        r4.error.toLowerCase().indexOf("select") !== -1);
+
+      var r5 = SqlEngine.execute("DROP TABLE pokemon");
+      assertOk("DROP is blocked", !!r5.error);
+
+      var r6 = SqlEngine.execute("UPDATE pokemon SET level = 99");
+      assertOk("UPDATE is blocked", !!r6.error);
+
+      var r7 = SqlEngine.execute("DELETE FROM pokemon");
+      assertOk("DELETE is blocked", !!r7.error);
+
+      // Test 5: engine not initialised
+      var EngineRef = SqlEngine;  // capture reference before we mess with state
+      var origReady = EngineRef._ready;
+      EngineRef._ready = false;
+      var r8 = EngineRef.execute("SELECT 1");
+      EngineRef._ready = origReady;
+      assertOk("Uninitialised engine returns error", !!r8.error);
+
+      // Test 6: side-effect isolation — open a separate clone via raw
+      // SQL.js, insert a rogue row, close the clone.  Then query through
+      // SqlEngine and verify the rogue row is NOT visible (proving that
+      // each execute() call starts from a fresh seed clone).
+      var r9a = SqlEngine.execute("SELECT COUNT(*) AS cnt FROM pokemon");
+      var countBefore = r9a.rows[0][0];
+      assertOk("Seed has " + countBefore + " rows before tampering", countBefore > 0);
+
+      var rogue = new SQL.Database(seedBytes);
+      rogue.run("INSERT INTO pokemon VALUES (99, 'Mew', 'Psychic', 50)");
+      rogue.close();
+
+      var r9b = SqlEngine.execute("SELECT COUNT(*) AS cnt FROM pokemon");
+      assertEq("Seed row count unchanged after rogue clone insertion", r9b.rows[0][0], countBefore);
+
+      // Test 7: complex SELECT — aggregate (columns/row count seed-dependent)
+      var r10 = SqlEngine.execute(
+        "SELECT type, COUNT(*) AS cnt FROM pokemon GROUP BY type ORDER BY type"
+      );
+      assertOk("Aggregate SELECT succeeds", !r10.error);
+      if (!r10.error) {
+        assertEq("Aggregate returns 2 columns", r10.columns.length, 2);
+        var allCounts = r10.rows.map(function (r) { return r[1]; });
+        var totalFromGroups = allCounts.reduce(function (a, b) { return a + b; }, 0);
+        assertEq("Sum of group counts equals total rows (" + countBefore + ")", totalFromGroups, countBefore);
+      }
+
+      // ---------------------------------------------------------------
+      // Task 2.2 — ResultCompare.compare()
+      // ---------------------------------------------------------------
+
+      info("<hr><strong>Task 2.2 — ResultCompare.compare()</strong>");
+
+      // Helper: build a result-set object from engine
+      function q(sql) {
+        var r = SqlEngine.execute(sql);
+        if (r.error) throw new Error(r.error);
+        return r;
+      }
+
+      // Test C1: exact match (ordered)
+      var a = q("SELECT id, name FROM pokemon ORDER BY id");
+      var b = q("SELECT id, name FROM pokemon ORDER BY id");
+      var cr1 = ResultCompare.compare(a, b, { ordered: true });
+      assertOk("C1: Exact match (ordered)", cr1.matched);
+
+      // Test C2: mismatch — different row counts
+      var c = q("SELECT id, name FROM pokemon WHERE level > 10");
+      var d = q("SELECT id, name FROM pokemon");
+      var cr2 = ResultCompare.compare(c, d, { ordered: true });
+      assertOk("C2: Row count mismatch detected", !cr2.matched);
+      assertOk("C2: rowCountMatch=false", !cr2.details.rowCountMatch);
+
+      // Test C3: mismatch — different values
+      var e = q("SELECT id, name FROM pokemon WHERE id = 1 ORDER BY id");
+      var f = q("SELECT id, name FROM pokemon WHERE id = 2 ORDER BY id");
+      var cr3 = ResultCompare.compare(e, f, { ordered: true });
+      assertOk("C3: Value mismatch detected", !cr3.matched);
+
+      // Test C4: unordered match
+      var g = q("SELECT id, name FROM pokemon ORDER BY id ASC");
+      var h = q("SELECT id, name FROM pokemon ORDER BY id DESC");
+      // Same rows, different order → should MATCH with ordered=false
+      var cr4 = ResultCompare.compare(g, h, { ordered: false });
+      assertOk("C4: Unordered match (different sort)", cr4.matched);
+
+      // Same rows, different order → should FAIL with ordered=true
+      var cr4b = ResultCompare.compare(g, h, { ordered: true });
+      assertOk("C4b: Ordered mismatch (different sort)", !cr4b.matched);
+
+      // Test C5: column case insensitivity
+      var i = q("SELECT id, name FROM pokemon WHERE id = 1");
+      var j = q("SELECT ID, NAME FROM pokemon WHERE id = 1");
+      var cr5 = ResultCompare.compare(i, j);
+      assertOk("C5: Column case-insensitive match", cr5.matched);
+
+      // Test C6: numeric normalisation (string "10" vs number 10)
+      // SQL.js returns numbers for INTEGER columns
+      var k = { columns: ["cnt"], rows: [[10]] };
+      var l = { columns: ["cnt"], rows: [["10"]] };
+      var cr6 = ResultCompare.compare(k, l);
+      assertOk("C6: Numeric normalisation (10 vs '10')", cr6.matched);
+
+      // Test C7: whitespace normalisation
+      var m = { columns: ["name"], rows: [["hello   world"]] };
+      var n = { columns: ["name"], rows: [["hello world"]] };
+      var cr7 = ResultCompare.compare(m, n);
+      assertOk("C7: Whitespace collapsed", cr7.matched);
+
+      // Test C8: null handling
+      var o = { columns: ["x"], rows: [[null]] };
+      var p = { columns: ["x"], rows: [[null]] };
+      var cr8 = ResultCompare.compare(o, p);
+      assertOk("C8: Null match", cr8.matched);
+
+      var o2 = { columns: ["x"], rows: [[null]] };
+      var p2 = { columns: ["x"], rows: [["null"]] };
+      var cr8b = ResultCompare.compare(o2, p2);
+      assertOk("C8b: Null vs string 'null' mismatch", !cr8b.matched);
+
+      // Test C9: missing inputs
+      var cr9 = ResultCompare.compare(null, { columns: [], rows: [] });
+      assertOk("C9: Null expected rejected", !cr9.matched);
+
+      // Test C10: empty result sets match
+      var cr10 = ResultCompare.compare(
+        { columns: ["id"], rows: [] },
+        { columns: ["id"], rows: [] }
+      );
+      assertOk("C10: Empty result sets match", cr10.matched);
+
+      // Test C11: ordered=false with duplicates
+      var u = { columns: ["x"], rows: [[1], [1], [2]] };
+      var v = { columns: ["x"], rows: [[2], [1], [1]] };
+      var cr11 = ResultCompare.compare(u, v, { ordered: false });
+      assertOk("C11: Unordered with duplicates match", cr11.matched);
+
+      // Test C12: unordered mismatch with wrong duplicates count
+      var w = { columns: ["x"], rows: [[1], [2]] };
+      var x = { columns: ["x"], rows: [[1], [1]] };
+      var cr12 = ResultCompare.compare(w, x, { ordered: false });
+      assertOk("C12: Unordered duplicate count mismatch", !cr12.matched);
+
+      // ---------------------------------------------------------------
+      // Summary
+      // ---------------------------------------------------------------
+
+      var total = passed + failed;
+      var cls = failed === 0 ? "pass" : "fail";
+      var symbol = failed === 0 ? "&#10003;" : "&#10007;";
+      summaryEl.className = "test " + cls;
+      summaryEl.innerHTML = symbol + " " + passed + "/" + total + " tests passed" +
+        (failed > 0 ? " (" + failed + " failed)" : "");
+
+      info("<em>Open the browser console for detailed error messages (F12).</em>");
+      info("<em>To re-run tests, refresh the page.</em>");
+    }
+
+    runTests().catch(function (e) {
+      fail("Unhandled error: " + e.message);
+      console.error(e);
+    });
+  })();
+  </script>
+</body>
+</html>

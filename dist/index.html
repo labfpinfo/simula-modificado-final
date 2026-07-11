@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simulador SQL — PokemonDB</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #F4EFE6; --bg-card: #FDFAF5; --bg-dark: #14110C;
+      --border: #D6CCBA; --txt: #1E1A14; --txt2: #4A4030; --txt3: #63594A;
+      --blue: #0061D5; --green: #00C060; --orange: #A84800;
+      --red: #D10027; --yellow: #D4A000;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg); color: var(--txt); min-height: 100vh;
+    }
+
+    /* Respect users who prefer reduced motion (vestibular sensitivity). */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition: none !important;
+        animation: none !important;
+        scroll-behavior: auto !important;
+      }
+    }
+
+    /* Loading */
+    #loading-msg {
+      text-align: center; padding: 3rem 1rem; color: var(--txt3);
+      font-size: 0.95rem;
+    }
+
+    /* Status bar */
+    #status-bar {
+      display: none; align-items: center; gap: 1rem; padding: 0.6rem 1.2rem;
+      background: var(--bg-dark); color: #D8C8A0; font-size: 0.82rem;
+      border-bottom: 1px solid #2A2418;
+    }
+    #status-bar .spacer { flex: 1; }
+    #status-identity { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+    #status-identity .status-avatar {
+      width: 26px; height: 26px; flex: 0 0 26px; border-radius: 50%;
+      overflow: hidden; background: #2A2418; display: flex;
+      align-items: center; justify-content: center;
+    }
+    #status-identity .status-avatar svg,
+    #status-identity .status-avatar img { width: 100%; height: 100%; display: block; }
+    #status-identity .status-name {
+      font-weight: 600; color: #F4EFE6; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; max-width: 180px;
+    }
+    #progress-track { width: 140px; height: 4px; background: #2A2418; border-radius: 2px; overflow: hidden; }
+    #progress-fill { height: 100%; background: var(--blue); border-radius: 2px; width: 0%; transition: width 0.3s; }
+
+    /* Start screen */
+    #start-screen {
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 80vh; padding: 2rem 1rem; text-align: center;
+    }
+    .start-card {
+      background: var(--bg-card); border: 1.5px solid var(--border); border-radius: 12px;
+      padding: 2.2rem; max-width: 560px; width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .start-card h1 { font-size: 1.65rem; margin-bottom: 0.5rem; color: var(--txt); }
+    .start-card .subtitle { font-size: 1rem; color: var(--txt3); margin-bottom: 1.5rem; }
+    .start-card label { display: block; font-size: 0.92rem; font-weight: 600; color: var(--txt2); margin-bottom: 0.4rem; }
+    .start-card input[type="text"] {
+      width: 100%; padding: 0.6rem 0.8rem; border: 1.5px solid var(--border);
+      border-radius: 8px; font-size: 1.05rem; font-family: inherit;
+      background: #fff; color: var(--txt); outline: none; transition: border-color 0.15s;
+    }
+    .start-card input[type="text"]:focus { border-color: var(--blue); }
+    .start-card .name-error {
+      color: var(--red); font-size: 0.85rem; margin-top: 0.4rem; display: none;
+    }
+    .start-card button {
+      width: 100%; margin-top: 1rem; padding: 0.7rem; border: none; border-radius: 8px;
+      background: var(--blue); color: #fff; font-size: 1.05rem; font-weight: 600;
+      cursor: pointer; font-family: inherit; transition: background 0.15s;
+    }
+    .start-card button:hover { background: #0080FF; }
+
+    /* Companion picker (start screen) */
+    .avatar-section { margin-top: 1.1rem; text-align: left; }
+    .avatar-section .avatar-hint { font-size: 0.8rem; color: var(--txt3); margin: 0.1rem 0 0.5rem; font-weight: 400; }
+    #avatar-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+    .avatar-option {
+      display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
+      padding: 0.6rem 0.3rem; border: 1.5px solid var(--border); border-radius: 10px;
+      background: #fff; cursor: pointer; font-family: inherit; transition: border-color 0.12s, background 0.12s;
+    }
+    .avatar-option:hover { border-color: var(--blue); background: #F0F8FF; }
+    .avatar-option:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+    .avatar-option[aria-checked="true"] { border-color: var(--blue); background: #E6F1FF; box-shadow: 0 0 0 1px var(--blue) inset; }
+    .avatar-option .avatar-img {
+      width: 64px; height: 64px; border-radius: 50%; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; background: #F4EFE6;
+    }
+    .avatar-option .avatar-img svg, .avatar-option .avatar-img img { width: 100%; height: 100%; display: block; }
+    .avatar-option .avatar-name { font-size: 0.85rem; font-weight: 600; color: var(--txt2); }
+
+    /* Exercise area */
+    #exercise-area { display: none; max-width: 1100px; margin: 0 auto; padding: 1.2rem 1.5rem 2rem; }
+    #exercise-area.with-sidebar { max-width: 1440px; }
+
+    /* Side menu (phase + exercise list) */
+    .app-shell { display: block; }
+    .app-shell.with-sidebar {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      gap: 1.6rem; align-items: start;
+    }
+    /* min-width:0 lets the content column shrink instead of overflowing
+       when it holds wide SQL boxes or result tables, which otherwise
+       forces the grid wider and looks like the menu overlapping. */
+    .app-shell.with-sidebar .exercise-main { min-width: 0; }
+    .app-shell.with-sidebar .sidebar {
+      position: sticky; top: 1rem; max-height: calc(100vh - 2rem);
+      overflow-y: auto; background: var(--bg-card);
+      border: 1.5px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.7rem;
+    }
+    /* Collapsed: single full-width column, sidebar hidden, floating
+       toggle shown on top of the exercise. */
+    .app-shell.with-sidebar.sidebar-collapsed {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .app-shell.with-sidebar.sidebar-collapsed .sidebar { display: none; }
+    .sidebar-header {
+      display: flex; align-items: center; gap: 0.4rem;
+      padding: 0.2rem 0.3rem 0.6rem; border-bottom: 1px solid var(--border);
+      margin-bottom: 0.5rem;
+    }
+    .sidebar-title {
+      font-size: 0.78rem; font-weight: 700; color: var(--txt2);
+      text-transform: uppercase; letter-spacing: 0.05em; flex: 1;
+    }
+    .sidebar-toggle {
+      border: 1.5px solid var(--border); background: transparent; color: var(--txt2);
+      padding: 0.25rem 0.5rem; border-radius: 5px; font-size: 0.7rem;
+      font-weight: 600; cursor: pointer; font-family: inherit;
+      display: none;
+    }
+    .sidebar-toggle:hover { border-color: var(--txt2); color: var(--txt); }
+    .app-shell.with-sidebar .sidebar-toggle { display: inline-block; }
+    /* Only shown when the sidebar is collapsed — otherwise it would count
+       as a third grid item and push the exercise into the wrong column. */
+    .app-shell.with-sidebar.sidebar-collapsed .sidebar-floating-toggle {
+      display: block; position: sticky; top: 0;
+      margin-bottom: 0.6rem;
+    }
+    .sidebar-floating-toggle { display: none; }
+    .sidebar-floating-toggle button {
+      border: 1.5px solid var(--border); background: var(--bg-card); color: var(--txt2);
+      padding: 0.4rem 0.7rem; border-radius: 7px; font-size: 0.78rem;
+      font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .sidebar-floating-toggle button:hover { border-color: var(--txt2); color: var(--txt); }
+
+    .sidebar-phase {
+      margin-bottom: 0.7rem;
+    }
+    .sidebar-phase-label {
+      font-size: 0.7rem; font-weight: 700; color: var(--txt3);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 0.2rem 0.3rem; margin-bottom: 0.2rem;
+    }
+    .sidebar-item {
+      display: flex; align-items: center; gap: 0.4rem;
+      width: 100%; text-align: left;
+      background: transparent; border: 1.5px solid transparent;
+      border-radius: 6px; padding: 0.3rem 0.5rem; margin-bottom: 0.15rem;
+      font-size: 0.78rem; color: var(--txt); cursor: pointer;
+      font-family: inherit; transition: background 0.12s, color 0.12s;
+      line-height: 1.3;
+    }
+    .sidebar-item:hover:not([disabled]):not(.locked) {
+      background: #E6F1FF; color: var(--blue);
+    }
+    .sidebar-item:focus-visible {
+      outline: 2px solid var(--blue); outline-offset: 1px;
+    }
+    .sidebar-item .status {
+      width: 18px; flex: 0 0 18px; text-align: center; font-size: 0.8rem;
+      font-weight: 700;
+    }
+    .sidebar-item.solved .status { color: #0A7A3D; }
+    .sidebar-item.skipped .status { color: var(--orange); }
+    .sidebar-item.current {
+      background: #E6F1FF; border-color: var(--blue);
+    }
+    .sidebar-item.current .status { color: var(--blue); }
+    .sidebar-item.locked {
+      color: var(--txt3); cursor: not-allowed; opacity: 0.65;
+    }
+    .sidebar-item.locked .status { color: var(--txt3); }
+    .sidebar-item .label { flex: 1; }
+
+    @media (max-width: 820px) {
+      #exercise-area.with-sidebar { max-width: 900px; }
+      .app-shell.with-sidebar,
+      .app-shell.with-sidebar.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+      .app-shell.with-sidebar .sidebar {
+        position: static; max-height: none; margin-bottom: 0.8rem;
+      }
+      .app-shell.with-sidebar.sidebar-collapsed .sidebar { display: none; }
+    }
+
+    /* Badges */
+    .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.7rem;
+      border-radius: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .badge-guided { background: #E6F1FF; color: var(--blue); border: 1.5px solid var(--blue); }
+    .badge-semi { background: #FFF0E3; color: var(--orange); border: 1.5px solid var(--orange); }
+    .badge-exam { background: #FFE8EC; color: var(--red); border: 1.5px solid var(--red); }
+
+    /* Exercise card */
+    .now-card {
+      background: var(--bg-card); border: 2px solid var(--blue); border-radius: 10px;
+      padding: 1rem 1.2rem; margin-bottom: 0.8rem;
+    }
+    .now-card.exam-mode { border-color: var(--orange); }
+    .now-card .card-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+    .now-card .card-title { font-size: 0.9rem; font-weight: 600; color: var(--txt); flex: 1; }
+    .enunciado { font-size: 0.9rem; color: var(--txt2); line-height: 1.65; margin-bottom: 0.8rem; }
+    .enunciado strong { color: var(--txt); }
+
+    /* Expected SQL display (guided / after skip) */
+    .mysql-note { margin: 0.6rem 0; padding: 0.5rem 0.75rem; border-left: 3px solid var(--amber, #d97706);
+      background: rgba(217, 119, 6, 0.07); border-radius: 0 6px 6px 0; font-size: 0.85rem; }
+    .mysql-note .label { display: inline-block; font-size: 0.65rem; font-weight: 700;
+      color: var(--amber, #d97706); text-transform: uppercase; letter-spacing: 0.06em; margin-right: 0.5rem; }
+    .expected-sql-box {
+      background: #E6F1FF; border: 1px solid #BDD6FF; border-radius: 6px;
+      padding: 0.5rem 0.8rem; margin-bottom: 0.8rem; font-family: 'Courier New', monospace;
+      font-size: 0.8rem; color: var(--blue); white-space: pre-wrap; word-break: break-all;
+      display: none;
+    }
+    .expected-sql-box .label { font-size: 0.65rem; font-weight: 700; color: var(--blue);
+      text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 0.3rem; }
+    .expected-sql-box .sql-text { display: block; font-family: inherit; }
+
+    /* Aids toggles */
+    .aids-row { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+    /* Procedimiento se aloja a la derecha del área visible del ejercicio. */
+    .aids-row #tog-guide { margin-left: auto; }
+    .aids-row button {
+      font-size: 0.75rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 5px;
+      cursor: pointer; border: 1.5px solid; font-family: inherit; transition: all 0.15s;
+      background: #E6F1FF; color: var(--blue); border-color: var(--blue);
+    }
+    .aids-row button:hover, .aids-row button.active { background: var(--blue); color: #fff; }
+    .aids-box {
+      background: #F0F8FF; border: 1px solid #B8D8F8; border-left: 3px solid var(--blue);
+      border-radius: 0 6px 6px 0; padding: 0.6rem 0.8rem; margin-bottom: 0.6rem;
+      font-size: 0.8rem; color: var(--txt2); line-height: 1.6; display: none;
+    }
+    .aids-box .aids-label { font-size: 0.65rem; font-weight: 700; color: var(--blue);
+      text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 0.3rem; }
+    .aids-box code {
+      background: #D6E8FF; padding: 1px 4px; border-radius: 3px; font-size: 0.8rem;
+      color: var(--blue); font-family: 'Courier New', monospace;
+    }
+
+    /* Solution note */
+    .solution-note {
+      background: #EDFFF6; border: 1px solid #A8E8C8; border-left: 3px solid var(--green);
+      border-radius: 0 6px 6px 0; padding: 0.6rem 0.8rem; margin-bottom: 0.6rem;
+      font-size: 0.8rem; color: var(--txt2); line-height: 1.6; display: none;
+    }
+    .solution-note .solution-label { font-size: 0.65rem; font-weight: 700; color: #0A5C28;
+      text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 0.3rem; }
+
+    /* Hints */
+    #hints-wrap { display: none; flex-direction: column; gap: 0.35rem; margin-bottom: 0.6rem; }
+    #hints-wrap .hint-btn {
+      background: var(--bg-card); border: 1.5px solid var(--orange); color: var(--orange);
+      font-size: 0.78rem; font-weight: 600; padding: 0.4rem 0.7rem; border-radius: 6px;
+      cursor: pointer; text-align: left; font-family: inherit; transition: all 0.15s;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    #hints-wrap .hint-btn:hover { background: #FFF0E3; }
+    #hints-wrap .hint-btn.used { background: #FFF0E3; border-color: #D4A000; color: #7A3800; cursor: default; pointer-events: none; }
+    #hints-wrap .hint-btn .hint-cost { margin-left: auto; font-size: 0.68rem; background: rgba(255,101,0,0.12); padding: 0.1rem 0.4rem; border-radius: 8px; white-space: nowrap; }
+    #hints-wrap .hint-btn.used .hint-cost { background: rgba(212,160,0,0.12); color: #9A7000; }
+    #hints-wrap .hint-text { font-size: 0.78rem; color: var(--txt2); line-height: 1.6; background: #FFFBF2;
+      border-left: 3px solid var(--yellow); padding: 0.4rem 0.7rem; border-radius: 0 5px 5px 0; display: none; }
+    #hints-wrap .hint-text.visible { display: block; }
+    #hints-wrap .hint-text code { background: #FFF3CC; padding: 1px 4px; border-radius: 3px; font-size: 0.75rem; color: #7A5000; font-family: 'Courier New', monospace; }
+
+    /* Query input */
+    .query-input-row { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; align-items: stretch; }
+    .query-input-row textarea {
+      flex: 1; padding: 0.55rem 0.7rem; border: 1.5px solid var(--border);
+      border-radius: 7px; font-size: 0.85rem; font-family: 'Courier New', monospace;
+      background: #fff; color: var(--txt); outline: none; transition: border-color 0.15s;
+      resize: vertical; min-height: 7.5rem; line-height: 1.4;
+    }
+    .query-input-row textarea:focus { border-color: var(--blue); }
+    .query-input-row .query-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+    .query-input-row button {
+      padding: 0.55rem 1rem; border: none; border-radius: 7px; font-size: 0.82rem;
+      font-weight: 600; cursor: pointer; font-family: inherit; transition: background 0.15s;
+      white-space: nowrap;
+    }
+    .query-hint {
+      font-size: 0.7rem; color: var(--txt3); margin-bottom: 0.6rem; line-height: 1.4;
+    }
+    #btn-submit { background: var(--blue); color: #fff; }
+    #btn-submit:hover { background: #0080FF; }
+    #btn-submit:disabled { background: #A0B8D0; cursor: not-allowed; }
+    #btn-skip { background: transparent; border: 1.5px solid var(--border); color: var(--txt3); }
+    #btn-skip:hover { color: var(--txt); border-color: var(--txt2); }
+
+    /* Feedback */
+    .feedback {
+      border-radius: 7px; padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; font-size: 0.83rem;
+      line-height: 1.6; display: none;
+    }
+    .feedback-ok { background: #EDFFF6; border: 1.5px solid var(--green); border-left: 4px solid var(--green); }
+    .feedback-ok .ok-sql { font-family: 'Courier New', monospace; background: #D6F8E4; padding: 0.3rem 0.5rem;
+      border-radius: 4px; font-size: 0.78rem; color: #0A5C28; margin-top: 0.3rem; display: block; white-space: pre-wrap; word-break: break-all; }
+    .feedback-skipped { background: #FFF0E3; border: 1.5px solid var(--orange); border-left: 4px solid var(--orange); }
+    .feedback-err { background: #FFF0F3; border: 1.5px solid var(--red); border-left: 4px solid var(--red); }
+    .feedback-err .err-detail { font-size: 0.78rem; color: var(--txt3); margin-top: 0.3rem; padding-top: 0.3rem; border-top: 1px solid #FFCCD5; }
+
+    /* Student result display */
+    .result-display {
+      background: #FAFAF5; border: 1px solid var(--border); border-radius: 7px;
+      padding: 0.6rem; margin-top: 0.5rem; display: none; overflow-x: auto;
+    }
+    .result-display .result-label { font-size: 0.65rem; font-weight: 700; color: var(--txt3);
+      text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 0.3rem; }
+    .result-display table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    .result-display th, .result-display td {
+      border: 1px solid var(--border); padding: 0.25rem 0.5rem; text-align: left;
+    }
+    .result-display th { background: #F0EBE0; color: var(--txt2); font-weight: 600; }
+    .result-display .empty-result { color: var(--txt3); font-style: italic; font-size: 0.78rem; }
+
+    /* Navigation row: previous + next */
+    .nav-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+    .nav-row button { flex: 1; padding: 0.6rem; border: none; border-radius: 8px;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit;
+      transition: background 0.15s, border-color 0.15s, color 0.15s; }
+    /* Next button (primary action) */
+    #btn-next { display: none; background: var(--green); color: #061A0E; }
+    #btn-next:hover { background: #00E070; }
+    /* Previous button (secondary action) */
+    #btn-prev { display: none; background: transparent; color: var(--txt2);
+      border: 1.5px solid var(--border); }
+    #btn-prev:hover { color: var(--txt); border-color: var(--txt2); background: #FAFAF5; }
+    #btn-prev:disabled, #btn-prev[aria-disabled="true"] {
+      color: var(--txt3); border-color: var(--border); background: transparent;
+      cursor: not-allowed; opacity: 0.6;
+    }
+
+    /* Complete screen */
+    #complete-screen {
+      display: none; max-width: 640px; margin: 2rem auto; padding: 0 1rem; text-align: center;
+    }
+    .complete-card {
+      background: var(--bg-card); border: 2px solid var(--green); border-radius: 12px;
+      padding: 2rem; box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .complete-card h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+    #final-student { font-size: 0.95rem; font-weight: 600; color: var(--txt2); margin-bottom: 0.8rem; }
+    #final-score { font-size: 2.4rem; font-weight: 700; color: var(--green); font-family: 'Courier New', monospace; }
+    #final-pct { font-size: 0.9rem; color: var(--txt3); margin-bottom: 1rem; }
+    #final-motivation { font-size: 0.9rem; font-weight: 600; color: var(--green); margin-bottom: 1rem; }
+    #final-detail { text-align: left; font-size: 0.82rem; color: var(--txt2); line-height: 1.7; margin-top: 1rem;
+      background: #FAFAF5; padding: 0.8rem; border-radius: 6px; border: 1px solid var(--border); }
+
+    /* Schema reference — always-available button + modal.
+       position: fixed so it overlays the start, exercise, and complete
+       views without depending on any particular layout container. */
+    #btn-schema {
+      position: fixed; right: 1rem; bottom: 1rem; z-index: 1000;
+      padding: 0.55rem 0.9rem; border: none; border-radius: 999px;
+      background: var(--bg-dark); color: #F4EFE6;
+      font-size: 0.85rem; font-weight: 600; cursor: pointer;
+      font-family: inherit; box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+      transition: background 0.15s, transform 0.1s;
+      display: flex; align-items: center; gap: 0.4rem;
+    }
+    #btn-schema:hover { background: #2A2418; }
+    #btn-schema:active { transform: translateY(1px); }
+    #btn-schema:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 2px;
+    }
+    #btn-schema[aria-expanded="true"] { background: var(--blue); }
+
+    #schema-modal[aria-hidden="true"] { display: none; }
+    #schema-modal[aria-hidden="false"] { display: flex; }
+    #schema-modal {
+      position: fixed; inset: 0; z-index: 1100;
+      align-items: center; justify-content: center;
+      background: rgba(20, 17, 12, 0.55);
+      padding: 1rem;
+    }
+    .schema-card {
+      background: var(--bg-card); border: 1.5px solid var(--border);
+      border-radius: 12px; max-width: 900px; width: 100%;
+      max-height: 86vh; display: flex; flex-direction: column;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+    }
+    .schema-head {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border);
+    }
+    .schema-head h2 {
+      font-size: 1.05rem; font-weight: 700; color: var(--txt);
+      flex: 1; margin: 0;
+    }
+    .schema-head .schema-sub {
+      font-size: 0.75rem; color: var(--txt3); font-weight: 400;
+    }
+    #btn-schema-close {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 1.4rem; line-height: 1; color: var(--txt3);
+      padding: 0.2rem 0.5rem; border-radius: 6px;
+      font-family: inherit;
+    }
+    #btn-schema-close:hover { color: var(--red); background: #FFF0F3; }
+    #btn-schema-close:focus-visible {
+      outline: 2px solid var(--blue); outline-offset: 2px;
+    }
+    .schema-body {
+      display: flex; gap: 0; flex: 1; min-height: 0;
+    }
+    .schema-list {
+      width: 220px; flex: 0 0 220px; padding: 0.6rem;
+      border-right: 1px solid var(--border); overflow-y: auto;
+      background: #FAF6EC;
+    }
+    .schema-list-item {
+      display: block; width: 100%; text-align: left;
+      background: transparent; border: 1.5px solid transparent;
+      border-radius: 7px; padding: 0.45rem 0.6rem; margin-bottom: 0.25rem;
+      font-size: 0.82rem; font-family: 'Courier New', monospace;
+      color: var(--blue); cursor: pointer; transition: background 0.12s;
+    }
+    .schema-list-item:hover { background: #E6F1FF; }
+    .schema-list-item.active {
+      background: var(--blue); color: #fff; border-color: var(--blue);
+    }
+    .schema-list-item:focus-visible {
+      outline: 2px solid var(--blue); outline-offset: 2px;
+    }
+    .schema-list-item .schema-list-meta {
+      display: block; font-family: inherit; font-size: 0.68rem;
+      color: var(--txt3); margin-top: 0.15rem;
+    }
+    .schema-list-item.active .schema-list-meta { color: #D6E8FF; }
+    .schema-detail {
+      flex: 1; padding: 0.9rem 1.1rem; overflow-y: auto;
+      font-size: 0.85rem; color: var(--txt2); line-height: 1.55;
+    }
+    .schema-detail h3 {
+      font-family: 'Courier New', monospace; font-size: 1rem;
+      color: var(--blue); margin-bottom: 0.2rem;
+    }
+    .schema-detail .schema-desc {
+      font-size: 0.82rem; color: var(--txt3); margin-bottom: 0.7rem;
+    }
+    .schema-detail h4 {
+      font-size: 0.7rem; font-weight: 700; color: var(--txt3);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin: 0.7rem 0 0.35rem;
+    }
+    .schema-cols-table {
+      width: 100%; border-collapse: collapse; font-size: 0.8rem;
+      margin-bottom: 0.5rem;
+    }
+    .schema-cols-table th, .schema-cols-table td {
+      border: 1px solid var(--border); padding: 0.3rem 0.5rem;
+      text-align: left; vertical-align: top;
+    }
+    .schema-cols-table th {
+      background: #F0EBE0; color: var(--txt2); font-weight: 600;
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .schema-cols-table td.col-name {
+      font-family: 'Courier New', monospace; color: var(--blue);
+      font-weight: 600;
+    }
+    .schema-cols-table td.col-type {
+      font-family: 'Courier New', monospace; color: var(--txt3);
+      font-size: 0.75rem;
+    }
+    .schema-cols-table td.col-note { color: var(--txt3); font-size: 0.75rem; }
+    .schema-pk {
+      display: inline-block; background: var(--blue); color: #fff;
+      font-size: 0.62rem; font-weight: 700; padding: 1px 5px;
+      border-radius: 8px; margin-left: 0.3rem; vertical-align: middle;
+    }
+    .schema-fk-list, .schema-inbound-list {
+      list-style: none; padding: 0; margin: 0;
+    }
+    .schema-fk-list li, .schema-inbound-list li {
+      font-family: 'Courier New', monospace; font-size: 0.78rem;
+      padding: 0.2rem 0; color: var(--txt2);
+    }
+    .schema-fk-list li code, .schema-inbound-list li code {
+      background: #E6F1FF; color: var(--blue);
+      padding: 1px 4px; border-radius: 3px; font-size: 0.78rem;
+    }
+    .schema-notes {
+      background: #FFFBF2; border-left: 3px solid var(--yellow);
+      border-radius: 0 6px 6px 0; padding: 0.5rem 0.7rem;
+      font-size: 0.8rem; color: var(--txt2); margin-top: 0.6rem;
+    }
+    .schema-empty {
+      color: var(--txt3); font-style: italic; font-size: 0.78rem;
+    }
+    @media (max-width: 640px) {
+      .schema-body { flex-direction: column; }
+      .schema-list { width: 100%; flex: 0 0 auto; max-height: 30vh;
+        border-right: none; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="loading-msg">Cargando el simulador SQL…</div>
+  <div id="preflight-err" style="display:none;text-align:center;padding:3rem 1rem;color:var(--red);font-size:0.95rem"></div>
+
+  <!-- Status bar -->
+  <div id="status-bar">
+    <span id="status-identity"></span>
+    <span id="status-phase"></span>
+    <span class="spacer"></span>
+    <span id="status-step"></span>
+    <span class="spacer"></span>
+    <div id="progress-track" role="progressbar" aria-label="Progreso del simulacro" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill"></div></div>
+    <span style="min-width:100px;text-align:right" id="status-score"></span>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- Start screen                                                        -->
+  <!-- ================================================================= -->
+  <div id="start-screen">
+    <div class="start-card">
+      <h1>Simulador SQL — PokemonDB</h1>
+      <p class="subtitle">Practica consultas SELECT para el examen de Bases de Datos.<br>Motor SQLite local — no necesita servidor.</p>
+      <label for="student-name">Tu nombre</label>
+      <input type="text" id="student-name" placeholder="Escribe tu nombre…" autocomplete="off" maxlength="60">
+      <div class="name-error" id="name-error">Por favor, escribe tu nombre para comenzar.</div>
+
+      <div class="avatar-section" id="avatar-section">
+        <label id="avatar-label">Elige tu compañero</label>
+        <div class="avatar-hint">Aparecerá junto a tu nombre en la barra superior.</div>
+        <div id="avatar-grid" role="radiogroup" aria-labelledby="avatar-label"></div>
+      </div>
+
+      <button id="btn-start">Comenzar</button>
+
+      <!-- Saved progress banner -->
+      <div id="saved-banner" style="display:none;margin-top:1rem;padding:0.6rem 0.8rem;background:#FFFBF2;border:1px solid #D4A000;border-radius:8px;font-size:0.8rem;color:#7A5000;line-height:1.5">
+        <span id="saved-banner-text"></span>
+        <div style="margin-top:0.4rem;display:flex;gap:0.4rem">
+          <button id="btn-continue" style="flex:1;padding:0.4rem;border:1.5px solid var(--blue);border-radius:6px;background:#E6F1FF;color:var(--blue);font-size:0.78rem;font-weight:600;cursor:pointer;font-family:inherit">Continuar</button>
+          <button id="btn-new-session" style="flex:1;padding:0.4rem;border:1.5px solid var(--border);border-radius:6px;background:transparent;color:var(--txt3);font-size:0.78rem;cursor:pointer;font-family:inherit">Nueva sesión</button>
+        </div>
+      </div>
+
+      <!-- Import -->
+      <div style="margin-top:1rem;padding-top:0.8rem;border-top:1px solid var(--border)">
+        <label for="import-file" style="font-size:0.78rem;color:var(--txt3);cursor:pointer">
+          📂 Importar progreso (continuar en otro navegador o desde archivo del profesor)
+        </label>
+        <input type="file" id="import-file" accept=".html,.htm" style="display:none">
+        <div id="import-error" style="display:none;color:var(--red);font-size:0.75rem;margin-top:0.3rem"></div>
+        <div id="import-ok" style="display:none;color:var(--green);font-size:0.75rem;margin-top:0.3rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- Exercise area                                                      -->
+  <!-- ================================================================= -->
+  <div id="exercise-area">
+
+    <div id="app-shell" class="app-shell">
+      <!-- Side menu — listing all phases/exercises; click navigates to
+           already-solved or already-skipped entries. The toggle in the
+           header collapses the menu on small screens. -->
+      <aside class="sidebar" id="sidebar" aria-label="Lista de ejercicios">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Ejercicios</span>
+          <button class="sidebar-toggle" id="btn-sidebar-collapse" type="button"
+                  aria-label="Ocultar menú" aria-controls="sidebar" aria-expanded="true">
+            Ocultar
+          </button>
+        </div>
+        <div id="sidebar-list" role="list"></div>
+      </aside>
+
+      <div class="sidebar-floating-toggle" id="sidebar-floating-toggle" hidden>
+        <button id="btn-sidebar-expand" type="button"
+                aria-label="Mostrar menú" aria-controls="sidebar" aria-expanded="false">
+          ☰ Mostrar menú
+        </button>
+      </div>
+
+      <div class="exercise-main">
+
+    <!-- Exercise card -->
+    <div id="exercise-card" class="now-card">
+      <div class="card-header">
+        <span id="mode-badge" class="badge badge-guided">Guiado</span>
+        <span class="card-title" id="exercise-title"></span>
+      </div>
+      <div class="enunciado" id="exercise-enunciado"></div>
+      <div class="mysql-note" id="mysql-note" style="display:none">
+        <span class="label">Nota MySQL</span>
+        <span id="mysql-note-text"></span>
+      </div>
+    </div>
+
+    <!-- Aids toggles — placed right under the statement so they are the
+         first thing the student notices in guided mode. -->
+    <div class="aids-row" id="aids-row" style="display:none">
+      <button id="tog-context">Contexto</button>
+      <button id="tog-guide">Procedimiento</button>
+    </div>
+
+    <!-- Aids boxes -->
+    <div class="aids-box" id="aids-context">
+      <span class="aids-label">Contexto</span>
+      <div id="aids-context-text"></div>
+    </div>
+    <div class="aids-box" id="aids-guide">
+      <span class="aids-label">Procedimiento</span>
+      <div id="aids-guide-text"></div>
+    </div>
+
+    <!-- Expected SQL (guided mode: shown from the start as a worked example) -->
+    <div class="expected-sql-box" id="expected-sql">
+      <span class="label">Solución de referencia (SQLite)</span>
+      <code id="expected-sql-text" class="sql-text"></code>
+    </div>
+
+    <!-- Solution note (guided mode) -->
+    <div class="solution-note" id="solution-note">
+      <span class="solution-label">Explicación de la solución</span>
+      <div id="solution-note-text"></div>
+    </div>
+
+    <!-- Hints -->
+    <div id="hints-wrap"></div>
+
+    <!-- Query input -->
+    <div class="query-input-row">
+      <textarea id="query-input" rows="5" placeholder="Escribe tu consulta SELECT…&#10;Pulsa Ctrl+Intro (o ⌘+Intro) para ejecutar." autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Consulta SQL"></textarea>
+      <div class="query-actions">
+        <button id="btn-submit">Ejecutar</button>
+        <button id="btn-skip">Saltar</button>
+      </div>
+    </div>
+    <div class="query-hint">Pulsa <strong>Ctrl+Intro</strong> (o <strong>⌘+Intro</strong> en Mac) para ejecutar. <strong>Intro</strong> solo añade una nueva línea.</div>
+
+    <!-- Feedback -->
+    <div class="feedback feedback-ok" id="feedback-ok" role="status" aria-live="polite">
+      <div id="feedback-ok-content"></div>
+      <span class="ok-sql" id="feedback-ok-sql"></span>
+    </div>
+    <div class="feedback feedback-err" id="feedback-err" role="alert" aria-live="assertive">
+      <div id="feedback-err-content"></div>
+      <div class="err-detail" id="feedback-err-detail"></div>
+    </div>
+
+    <!-- Student result display -->
+    <div class="result-display" id="result-display">
+      <span class="result-label">Tu consulta devolvió:</span>
+      <div id="result-content"></div>
+    </div>
+
+    <!-- Navigation row: previous + next -->
+    <div class="nav-row">
+      <button id="btn-prev" type="button" aria-label="Ejercicio anterior">← Anterior</button>
+      <button id="btn-next" type="button">Siguiente →</button>
+    </div>
+
+      </div><!-- /.exercise-main -->
+    </div><!-- /#app-shell -->
+  </div><!-- /#exercise-area -->
+
+  <!-- ================================================================= -->
+  <!-- Complete screen                                                    -->
+  <!-- ================================================================= -->
+  <div id="complete-screen">
+    <div class="complete-card">
+      <h2>Actividad finalizada</h2>
+      <div id="final-student"></div>
+      <div id="final-score">0.00</div>
+      <div id="final-pct"></div>
+      <div id="final-motivation"></div>
+      <div id="final-detail"></div>
+      <button id="btn-export" style="display:block;width:100%;margin-top:1rem;padding:0.6rem;border:none;border-radius:8px;background:var(--blue);color:#fff;font-size:0.9rem;font-weight:600;cursor:pointer;font-family:inherit;transition:background 0.15s">Exportar progreso (HTML)</button>
+      <div id="export-status" style="display:none;margin-top:0.4rem;font-size:0.78rem;text-align:center"></div>
+      <p style="margin-top:0.6rem;font-size:0.78rem;color:var(--txt3)">
+        El archivo exportado sirve como informe para el profesor y permite continuar el simulacro en otro navegador o equipo.
+      </p>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- Schema reference (always available from any view)                 -->
+  <!-- ================================================================= -->
+  <button id="btn-schema" type="button"
+          aria-haspopup="dialog" aria-controls="schema-modal" aria-expanded="false"
+          title="Ver tablas, columnas y relaciones de la base de datos">
+    📋 Ver esquema
+  </button>
+
+  <div id="schema-modal" role="dialog" aria-modal="true" aria-labelledby="schema-title" aria-hidden="true">
+    <div class="schema-card" role="document">
+      <div class="schema-head">
+        <div style="flex:1">
+          <h2 id="schema-title">Esquema de la base de datos</h2>
+          <div class="schema-sub">Tablas, columnas y relaciones de PokemonDB</div>
+        </div>
+        <button id="btn-schema-close" type="button" aria-label="Cerrar">&times;</button>
+      </div>
+      <div class="schema-body">
+        <div class="schema-list" id="schema-list" role="listbox" aria-label="Tablas"></div>
+        <div class="schema-detail" id="schema-detail" tabindex="0" aria-live="polite">
+          <span class="schema-empty">Selecciona una tabla para ver sus columnas y relaciones.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- Scripts — ORDER MATTERS: sql.js (asm) → engine → compare →        -->
+  <!--              exercises → progress-store → export-package →         -->
+  <!--              pokemon-seed → schema-reference → app                 -->
+  <!--                                                                     -->
+  <!-- We load sql-asm.js (NOT sql-wasm-browser.js) so the simulator      -->
+  <!-- works under file:// without needing to fetch a separate .wasm      -->
+  <!-- binary at runtime. The asm build compiles the SQLite engine to     -->
+  <!-- pure JavaScript via Emscripten's asm.js output, with no WebAssembly-->
+  <!-- file involved. Same initSqlJs() API, no protocol-specific workarounds.-->
+  <!--                                                                     -->
+  <!-- pokemon-seed.js MUST load before app.js so that window.POKEMON_SEED -->
+  <!-- is available when app.js initialises. It contains the SQLite seed  -->
+  <!-- database embedded as base64 (≈82 KB), so the simulator boots from  -->
+  <!-- a double-click of index.html under file:// with no XHR/fetch to    -->
+  <!-- data/pokemon.sqlite. The file is generated by tools/build-seed-js.js -->
+  <!-- from data/pokemon.sqlite. data/pokemon.sqlite is kept on disk as   -->
+  <!-- the source of truth for regeneration and manual use, but the       -->
+  <!-- production path does not depend on it.                              -->
+  <!--                                                                     -->
+  <!-- schema-reference.js MUST load before app.js so that                -->
+  <!-- window.SchemaReference is available when the schema modal is       -->
+  <!-- first opened. The data is curated (no live sqlite_master query) so -->
+  <!-- the button is usable from the start screen, BEFORE any exercise    -->
+  <!-- has run.                                                            -->
+  <!-- ================================================================= -->
+  <script src="vendor/sql-asm.js"></script>
+  <script src="src/sql-engine.js"></script>
+  <script src="src/result-compare.js"></script>
+  <!-- Bancos de ejercicios (uno por unidad) — SIEMPRE antes del ensamblador -->
+  <script src="src/exercise-banks/u1-consultas-basicas.js"></script>
+  <script src="src/exercise-banks/u2-joins.js"></script>
+  <script src="src/exercise-banks/u3-subconsultas.js"></script>
+  <script src="src/exercises.js"></script>
+  <script src="src/progress-store.js"></script>
+  <script src="src/export-package.js"></script>
+  <script src="src/pokemon-seed.js"></script>
+  <script src="src/schema-reference.js"></script>
+  <script src="src/app.js"></script>
+
+</body>
+</html>

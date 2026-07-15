@@ -7,8 +7,9 @@
     "convert-seed": "node tools/convert-pokemon-sql.js",
     "build-seed": "node tools/convert-pokemon-sql.js --output data/pokemon.sqlite",
     "build-seed-js": "node tools/build-seed-js.js",
-    "pretest": "node tools/build-seed-js.js --check && node tools/validate-exercises.js",
-    "test": "node --test tools/convert-pokemon-sql.test.js tools/build-seed-js.test.js tests/result-compare.test.js tests/sql-engine.test.js tests/app-flow.test.js tests/persistence.test.js tests/app-bootstrap.test.js tests/embedded-seed.test.js tests/schema-reference.test.js tests/schema-modal.test.js tests/previous-navigation.test.js tests/textarea-input.test.js tests/side-menu-and-skip.test.js",
+    "pretest": "node tools/check-focused-tests.js && node tools/build-seed-js.js --check && node tools/validate-exercises.js",
+    "test": "node --test tools/convert-pokemon-sql.test.js tools/build-seed-js.test.js tests/result-compare.test.js tests/sql-engine.test.js tests/app-flow.test.js tests/persistence.test.js tests/app-bootstrap.test.js tests/embedded-seed.test.js tests/schema-reference.test.js tests/schema-modal.test.js tests/previous-navigation.test.js tests/textarea-input.test.js tests/side-menu-and-skip.test.js tests/focused-test-guard.test.js tools/review-exports.test.js",
+    "check-focused-tests": "node tools/check-focused-tests.js",
     "build-dist": "node tools/build-dist.js",
     "check-dist": "node tools/build-dist.js --check",
     "validate-exercises": "node tools/validate-exercises.js",
@@ -16,5 +17,8 @@
   },
   "dependencies": {
     "sql.js": "1.14.1"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5"
   }
 }

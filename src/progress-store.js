@@ -16,9 +16,11 @@
    * Stored progress shape:
    *   { id, studentName, phaseIndex, exerciseIndex, score, maxScore,
    *     attemptLog, view, savedAt }
+   *   attemptLog entries preserve solved/skipped state and penalties; score
+   *   remains an app-calculated cache and is recalculated on restore.
  *
- * Graceful degradation: when IndexedDB is unavailable (private browsing,
- * old browser), all methods resolve with null/false rather than throwing.
+ * If IndexedDB fails, a localStorage recovery copy keeps the current session
+ * available for the student. The app surfaces guidance to export that copy.
  */
 
 (function () {
@@ -28,12 +30,14 @@
   var DB_VERSION = 1;
   var STORE_NAME = "sessions";
   var CURRENT_KEY = "current";
+  var FALLBACK_KEY = "simulador-consulta-progress-fallback";
 
   /** @type {IDBDatabase|null} cached handle */
   var _db = null;
 
   /** @type {boolean|null} null means "not yet checked" */
   var _available = null;
+  var _status = { backend: "indexeddb", message: "" };
 
   // ==========================================================================
   // Internal helpers
@@ -111,6 +115,65 @@
     });
   }
 
+  function fallbackAvailable() {
+    try {
+      if (typeof localStorage === "undefined" || localStorage === null) return false;
+      var probe = FALLBACK_KEY + "-probe";
+      localStorage.setItem(probe, "1");
+      localStorage.removeItem(probe);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function setFallbackStatus(message) {
+    _status = { backend: fallbackAvailable() ? "localStorage" : "memory", message: message || "" };
+  }
+
+  function fallbackSave(record, message) {
+    setFallbackStatus(message);
+    if (fallbackAvailable()) {
+      try {
+        localStorage.setItem(FALLBACK_KEY, JSON.stringify(record));
+      } catch (_e) {
+        _status = { backend: "memory", message: message || "" };
+      }
+    }
+    return _status;
+  }
+
+  function fallbackLoad(message) {
+    if (!fallbackAvailable()) {
+      if (message) setFallbackStatus(message);
+      return null;
+    }
+    try {
+      var raw = localStorage.getItem(FALLBACK_KEY);
+      if (!raw) return null;
+      setFallbackStatus(message);
+      return _validateAndReturn(JSON.parse(raw));
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function buildRecord(progress) {
+    return {
+      id: CURRENT_KEY,
+      studentName: progress.studentName || "",
+      selectedAvatar: progress.selectedAvatar || "",
+      phaseIndex: progress.phaseIndex || 0,
+      exerciseIndex: progress.exerciseIndex || 0,
+      score: _safeNum(progress.score, 0),
+      maxScore: _safeNum(progress.maxScore, 0),
+      attemptLog: _cloneAttemptLog(progress.attemptLog || []),
+      view: progress.view || "exercises",
+      savedAt: new Date().toISOString(),
+      menuCollapsed: progress.menuCollapsed === true,
+    };
+  }
+
   // ==========================================================================
   // Public API
   // ==========================================================================
@@ -121,7 +184,11 @@
      * @returns {boolean}
      */
     isAvailable: function () {
-      return idbAvailable();
+      return idbAvailable() || fallbackAvailable();
+    },
+
+    getStatus: function () {
+      return { backend: _status.backend, message: _status.message };
     },
 
     /**
@@ -138,38 +205,27 @@
      * @returns {Promise<void>}
      */
     saveProgress: function (progress) {
-      if (!idbAvailable()) return Promise.resolve();
+      var record = buildRecord(progress);
+      if (!idbAvailable()) {
+        return Promise.resolve(fallbackSave(record, "IndexedDB no está disponible."));
+      }
 
       return openDB().then(function (db) {
         return new Promise(function (resolve, reject) {
           var tx = db.transaction(STORE_NAME, "readwrite");
           var store = tx.objectStore(STORE_NAME);
-          var record = {
-            id: CURRENT_KEY,
-            studentName: progress.studentName || "",
-            selectedAvatar: progress.selectedAvatar || "",
-            phaseIndex: progress.phaseIndex || 0,
-            exerciseIndex: progress.exerciseIndex || 0,
-            score: _safeNum(progress.score, 0),
-            maxScore: _safeNum(progress.maxScore, 0),
-            attemptLog: _cloneAttemptLog(progress.attemptLog || []),
-            view: progress.view || "exercises",
-            savedAt: new Date().toISOString(),
-            // Side-menu state: collapsed/expanded preference. Persisted so
-            // the student's choice survives a reload. Default is expanded
-            // ("false" → menu visible on desktop, toggle controls mobile).
-            menuCollapsed: progress.menuCollapsed === true,
-          };
           var req = store.put(record);
-          req.onsuccess = function () { resolve(); };
+          req.onsuccess = function () {
+            _status = { backend: "indexeddb", message: "" };
+            resolve(_status);
+          };
           req.onerror = function () {
             reject(new Error("No se pudo guardar el progreso: " +
               ((req.error && req.error.message) || "error desconocido")));
           };
         });
-      }).catch(function () {
-        // Silently swallow storage errors — don't block the exercise flow
-        return;
+      }).catch(function (err) {
+        return fallbackSave(record, err && err.message ? err.message : "No se pudo guardar en IndexedDB.");
       });
     },
 
@@ -178,15 +234,16 @@
      * @returns {Promise<Object|null>} Parsed progress or null if nothing saved.
      */
     loadProgress: function () {
-      if (!idbAvailable()) return Promise.resolve(null);
+      if (!idbAvailable()) return Promise.resolve(fallbackLoad("IndexedDB no está disponible."));
 
       return withStore("readonly", function (store) {
         return store.get(CURRENT_KEY);
       }).then(function (record) {
-        if (!record) return null;
+        if (!record) return fallbackLoad("");
+        _status = { backend: "indexeddb", message: "" };
         return _validateAndReturn(record);
-      }).catch(function () {
-        return null;
+      }).catch(function (err) {
+        return fallbackLoad(err && err.message ? err.message : "No se pudo leer IndexedDB.");
       });
     },
 
@@ -195,14 +252,14 @@
      * @returns {Promise<boolean>}
      */
     hasProgress: function () {
-      if (!idbAvailable()) return Promise.resolve(false);
+      if (!idbAvailable()) return Promise.resolve(!!fallbackLoad("IndexedDB no está disponible."));
 
       return withStore("readonly", function (store) {
         return store.count(CURRENT_KEY);
       }).then(function (count) {
-        return count > 0;
-      }).catch(function () {
-        return false;
+        return count > 0 || !!fallbackLoad("");
+      }).catch(function (err) {
+        return !!fallbackLoad(err && err.message ? err.message : "No se pudo leer IndexedDB.");
       });
     },
 
@@ -211,12 +268,17 @@
      * @returns {Promise<void>}
      */
     clearProgress: function () {
-      if (!idbAvailable()) return Promise.resolve();
+      if (!idbAvailable()) {
+        if (fallbackAvailable()) localStorage.removeItem(FALLBACK_KEY);
+        return Promise.resolve();
+      }
 
       return withStore("readwrite", function (store) {
         return store.delete(CURRENT_KEY);
-      }).catch(function () {
-        return;
+      }).then(function () {
+        if (fallbackAvailable()) localStorage.removeItem(FALLBACK_KEY);
+      }).catch(function (err) {
+        setFallbackStatus(err && err.message ? err.message : "No se pudo borrar IndexedDB.");
       });
     },
   };
@@ -248,6 +310,7 @@
         // not carry this field; default is false.
         skipped: entry.skipped === true,
         scoreDelta: typeof entry.scoreDelta === "number" ? entry.scoreDelta : 0,
+        submittedSql: typeof entry.submittedSql === "string" ? entry.submittedSql : "",
       });
     }
     return out;
@@ -297,6 +360,13 @@
   function _safeNum(val, fallback) {
     if (typeof val === "number" && isFinite(val)) return val;
     return fallback;
+  }
+
+  if (window.__PROGRESS_STORE_TEST_HOOKS__) {
+    window.ProgressStoreTestHooks = {
+      cloneAttemptLog: _cloneAttemptLog,
+      validateAndReturn: _validateAndReturn,
+    };
   }
 
   // ==========================================================================

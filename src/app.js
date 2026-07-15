@@ -25,7 +25,6 @@
   var SCORE = {
     DEFAULT_ERROR_PENALTY: 0.25,
     DEFAULT_HINT_PENALTY: 0.1,
-    SKIP_MULTIPLIER: 2,
   };
 
   // ==========================================================================
@@ -148,8 +147,6 @@
   /**
    * An exercise's fair share of the total score — its own point value
    * (ex.scoring.points, as defined in exercises.js; default 1 if not set).
-   * Used so that skipping an exercise forfeits its actual weight instead
-   * of a small flat penalty or an equal split across all exercises —
    * exercises.js gives different exercises different point values
    * (e.g. 1 pt for guided phase-1 exercises, 3 pt for exam exercises).
    * @param {Object} ex — the exercise object
@@ -160,6 +157,36 @@
       return ex.scoring.points;
     }
     return 1;
+  }
+
+  /** Find the current exercise definition for an attempt-log id. */
+  function _exerciseById(exerciseId) {
+    for (var pi = 0; pi < AppExercises.phases.length; pi++) {
+      var exercises = AppExercises.phases[pi].exercises;
+      for (var ei = 0; ei < exercises.length; ei++) {
+        if (exercises[ei].id === exerciseId) return exercises[ei];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Recalculate earned credit from the attempt log. An exercise earns no
+   * credit until it is solved; its own recorded penalties reduce only that
+   * exercise's credit. This also migrates legacy saved scores on restore.
+   */
+  function _recalculateScore() {
+    var total = 0;
+    for (var i = 0; i < state.attemptLog.length; i++) {
+      var entry = state.attemptLog[i];
+      var ex = _exerciseById(entry.exerciseId);
+      var penalties = typeof entry.scoreDelta === "number" ? Math.min(0, entry.scoreDelta) : 0;
+      entry.earnedPoints = entry.solved && ex
+        ? Math.max(0, _exerciseShare(ex) + penalties)
+        : 0;
+      total += entry.earnedPoints;
+    }
+    state.score = Math.min(state.maxScore, total);
   }
 
   /** Inner markup for an avatar's picture (image file if provided, else SVG). */
@@ -194,7 +221,7 @@
     /** @type {number} Current exercise index within the phase (0-based) */
     exerciseIndex: 0,
 
-    /** @type {number} Current total score (starts at max, penalties deduct) */
+    /** @type {number} Current total score (sum of earned exercise credit) */
     score: 0,
 
     /** @type {number} Maximum possible score (sum of all exercise points) */
@@ -586,12 +613,7 @@
         solved: false,
         skipped: false,
         scoreDelta: 0,
-        // Points forfeited because the exercise was skipped without being
-        // solved. Restored (added back to scoreDelta) if the student later
-        // returns and solves it — see handleSkip() and the "matched"
-        // branch of handleSubmit().
-        forfeited: false,
-        forfeitedAmount: 0,
+        earnedPoints: 0,
       });
     }
 
@@ -1091,14 +1113,14 @@
     // Mark hint as used
     state.currentExerciseState.hintsUsed.push(hintIndex);
 
-    // Apply penalty
+    // Penalties affect this exercise's potential credit, not unresolved work.
     var penalty = hint.penalty !== undefined ? hint.penalty : SCORE.DEFAULT_HINT_PENALTY;
-    state.score = Math.max(0, state.score - penalty);
     var curEntry = _getCurrentLogEntry();
     if (curEntry) {
       curEntry.hintsUsed = state.currentExerciseState.hintsUsed.length;
       curEntry.scoreDelta -= penalty;
     }
+    _recalculateScore();
 
     // Show hint text and mark button
     var textEl = document.getElementById("hint-text-" + hintIndex);
@@ -1124,6 +1146,8 @@
 
     state.currentExerciseState.attempts++;
     state.currentExerciseState.lastSql = sql;
+    var submittedLogEntry = _getCurrentLogEntry();
+    if (submittedLogEntry) submittedLogEntry.submittedSql = sql;
 
     // Execute student SQL
     var studentResult = window.SqlEngine.execute(sql);
@@ -1131,12 +1155,12 @@
     // If there's a SQL error, show it immediately
     if (studentResult.error) {
       var errPenalty = ex.scoring && ex.scoring.errorPenalty ? ex.scoring.errorPenalty : SCORE.DEFAULT_ERROR_PENALTY;
-      state.score = Math.max(0, state.score - errPenalty);
       var logEntry = _getCurrentLogEntry();
       if (logEntry) {
         logEntry.attempts = state.currentExerciseState.attempts;
         logEntry.scoreDelta -= errPenalty;
       }
+      _recalculateScore();
       renderStatusBar();
       saveCurrentProgress();
       renderFeedback(false, studentResult, ex.expectedSql,
@@ -1172,16 +1196,8 @@
         // determines the menu badge. We do NOT clear `skipped` — it
         // records the history without affecting current behaviour.
 
-        // If this exercise's share was forfeited by an earlier skip,
-        // solving it now restores that credit — the student ultimately
-        // demonstrated the skill, so it shouldn't stay at zero.
-        if (curLog.forfeited) {
-          state.score = Math.min(state.maxScore, state.score + curLog.forfeitedAmount);
-          curLog.scoreDelta += curLog.forfeitedAmount;
-          curLog.forfeited = false;
-          curLog.forfeitedAmount = 0;
-        }
       }
+      _recalculateScore();
       renderStatusBar();
       renderMenu();
       saveCurrentProgress();
@@ -1190,12 +1206,12 @@
     } else {
       // Penalize wrong answer
       var penalty = ex.scoring && ex.scoring.errorPenalty ? ex.scoring.errorPenalty : SCORE.DEFAULT_ERROR_PENALTY;
-      state.score = Math.max(0, state.score - penalty);
       var logE = _getCurrentLogEntry();
       if (logE) {
         logE.attempts = state.currentExerciseState.attempts;
         logE.scoreDelta -= penalty;
       }
+      _recalculateScore();
       renderStatusBar();
       saveCurrentProgress();
 
@@ -1225,24 +1241,14 @@
 
     var logE = _getCurrentLogEntry();
 
-    // Skip penalty (R3-002): 2× the exercise's error penalty. A skip
-    // costs the same as two wrong attempts — enough to discourage
-    // skipping everything, but the student can still come back, solve
-    // it, and recover most of the exercise's points.
-    var ep = (ex.scoring && ex.scoring.errorPenalty) || SCORE.DEFAULT_ERROR_PENALTY;
-    var forfeit = ep * SCORE.SKIP_MULTIPLIER;
-    state.score = Math.max(0, state.score - forfeit);
-
     if (logE) {
       logE.solved = false;
       // Mark the entry as skipped so the side menu treats it as
       // navigable (the student can come back and try it later), but
       // the reference solution is NEVER shown for a skipped entry.
       logE.skipped = true;
-      logE.scoreDelta -= forfeit;
-      logE.forfeited = true;
-      logE.forfeitedAmount = forfeit;
     }
+    _recalculateScore();
 
     // Mark transient state so renderPath branches know the exercise was
     // skipped. The student can still type/submit from the feedback
@@ -1271,8 +1277,7 @@
     dom.feedbackOk.classList.add("feedback-skipped");
     var skipGuided = AppExercises.phases[state.phaseIndex].mode === "guided";
     dom.feedbackOkContent.textContent =
-      "Saltaste este ejercicio (penalización: " + forfeit.toFixed(2) +
-      " pt). Puedes volver a intentarlo cuando quieras desde el menú lateral" +
+      "Saltaste este ejercicio (0 puntos hasta que lo resuelvas). Puedes volver a intentarlo cuando quieras desde el menú lateral" +
       (skipGuided ? "." : " — la solución no se mostrará.");
     dom.feedbackOkSql.textContent = "";
     dom.feedbackOkSql.style.display = "none";
@@ -1386,7 +1391,7 @@
     state.phaseIndex = 0;
     state.exerciseIndex = 0;
     state.maxScore = AppExercises.maxScore();
-    state.score = state.maxScore;
+    state.score = 0;
     state.attemptLog = [];
     state.view = "exercises";
 
@@ -1401,9 +1406,11 @@
    * Called after every state-changing action.  Errors are silently ignored
    * so persistence failures never block the exercise flow.
    */
-  function saveCurrentProgress() {
-    if (!window.ProgressStore || !window.ProgressStore.isAvailable()) return;
-    window.ProgressStore.saveProgress({
+  function _currentProgressSnapshot() {
+    // score and earnedPoints are derived from the immutable exercise bank plus
+    // attempt-log state. Never carry a stale aggregate across a boundary.
+    _recalculateScore();
+    return {
       studentName: state.studentName,
       selectedAvatar: state.selectedAvatar,
       phaseIndex: state.phaseIndex,
@@ -1412,11 +1419,34 @@
       maxScore: state.maxScore,
       attemptLog: state.attemptLog,
       view: state.view,
-      // Persist the menu collapsed/expanded preference so the
-      // student's choice survives a reload.
       menuCollapsed: state.menuCollapsed === true,
+    };
+  }
+
+  function showStorageRecoveryGuidance() {
+    if (!window.ProgressStore || typeof window.ProgressStore.getStatus !== "function") return;
+    var status = window.ProgressStore.getStatus();
+    var persistenceAvailable = typeof window.ProgressStore.isAvailable === "function" &&
+      window.ProgressStore.isAvailable();
+    if (status && status.backend === "indexeddb" && persistenceAvailable) return;
+    var message = status.backend === "localStorage"
+      ? "IndexedDB no ha podido guardar esta sesión. Se está usando una copia local de recuperación; exportá el progreso antes de cerrar el navegador."
+      : "El navegador no puede guardar el progreso de forma duradera. Exportá el progreso antes de cerrar el navegador.";
+    if (dom.storageWarning) {
+      dom.storageWarning.textContent = message;
+      dom.storageWarning.style.display = "block";
+    }
+  }
+
+  function saveCurrentProgress() {
+    if (!window.ProgressStore || !window.ProgressStore.isAvailable()) {
+      showStorageRecoveryGuidance();
+      return Promise.resolve();
+    }
+    return window.ProgressStore.saveProgress(_currentProgressSnapshot()).then(function () {
+      showStorageRecoveryGuidance();
     }).catch(function () {
-      // Silently ignore — IndexedDB failures must not block exercises
+      showStorageRecoveryGuidance();
     });
   }
 
@@ -1457,16 +1487,16 @@
    */
   function _restoreFromProgress(saved) {
     // Validate indices against the current exercise set before accepting
-    if (!_validateProgressIndices(saved)) return;
+    if (!_validateProgressIndices(saved)) return false;
 
     state.studentName = saved.studentName;
     state.greeting = _pickGreeting();
     state.selectedAvatar = saved.selectedAvatar || "";
     state.phaseIndex = saved.phaseIndex;
     state.exerciseIndex = saved.exerciseIndex;
-    state.score = saved.score;
-    state.maxScore = saved.maxScore;
+    state.maxScore = AppExercises.maxScore();
     state.attemptLog = saved.attemptLog || [];
+    _recalculateScore();
     state.view = saved.view || "exercises";
     state.currentExerciseState = null;
     // Side-menu state — restore the student's collapse preference. Older
@@ -1481,6 +1511,7 @@
     } else {
       showExerciseViewRestored();
     }
+    return true;
   }
 
   /**
@@ -1490,19 +1521,25 @@
    * @returns {boolean}
    */
   function _validateProgressIndices(progress) {
-    if (progress.phaseIndex >= AppExercises.phases.length) {
+    var phaseIndex = progress && progress.phaseIndex;
+    if (typeof phaseIndex !== "number" || !isFinite(phaseIndex) ||
+        Math.floor(phaseIndex) !== phaseIndex || phaseIndex < 0 ||
+        phaseIndex >= AppExercises.phases.length) {
       dom.importError.style.display = "block";
       dom.importError.textContent =
-        "El archivo contiene una fase (" + (progress.phaseIndex + 1) +
+        "El archivo contiene una fase (" + (phaseIndex + 1) +
         ") que no existe en esta versión del simulador.";
       return false;
     }
-    var phase = AppExercises.phases[progress.phaseIndex];
-    if (progress.exerciseIndex >= phase.exercises.length) {
+    var phase = AppExercises.phases[phaseIndex];
+    var exerciseIndex = progress.exerciseIndex;
+    if (typeof exerciseIndex !== "number" || !isFinite(exerciseIndex) ||
+        Math.floor(exerciseIndex) !== exerciseIndex || exerciseIndex < 0 ||
+        exerciseIndex >= phase.exercises.length) {
       dom.importError.style.display = "block";
       dom.importError.textContent =
-        "El archivo contiene un ejercicio (" + (progress.exerciseIndex + 1) +
-        ") que no existe en la fase " + (progress.phaseIndex + 1) + ".";
+        "El archivo contiene un ejercicio (" + (exerciseIndex + 1) +
+        ") que no existe en la fase " + (phaseIndex + 1) + ".";
       return false;
     }
     return true;
@@ -1510,7 +1547,7 @@
 
   /** Export current progress as teacher-review HTML and trigger download. */
   function handleExport() {
-    if (!window.ExportPackage || !window.ProgressStore) return;
+    if (!window.ExportPackage) return;
 
     var exportStatus = dom.exportStatus;
     if (exportStatus) {
@@ -1518,63 +1555,26 @@
       exportStatus.textContent = "";
     }
 
-    // Load the latest saved progress (which includes the most recent attemptLog)
-    window.ProgressStore.loadProgress().then(function (saved) {
-      var progress = saved || {
-        studentName: state.studentName,
-        selectedAvatar: state.selectedAvatar,
-        phaseIndex: state.phaseIndex,
-        exerciseIndex: state.exerciseIndex,
-        score: state.score,
-        maxScore: state.maxScore,
-        attemptLog: state.attemptLog,
-        view: state.view,
-      };
+    // Export immediately from the current state. IndexedDB writes are async,
+    // so reading it here could omit an attempt made just before export.
+    var progress = _currentProgressSnapshot();
+    saveCurrentProgress();
+    try {
+      var pkg = window.ExportPackage.buildExport(progress);
+      window.ExportPackage.exportToFile(pkg);
 
-      try {
-        var pkg = window.ExportPackage.buildExport(progress);
-        window.ExportPackage.exportToFile(pkg);
-
-        if (exportStatus) {
-          exportStatus.style.display = "block";
-          exportStatus.style.color = "#00C060";
-          exportStatus.textContent = "✓ Exportado correctamente.";
-        }
-      } catch (err) {
-        if (exportStatus) {
-          exportStatus.style.display = "block";
-          exportStatus.style.color = "#E5002B";
-          exportStatus.textContent = "✗ Error al exportar: " + (err.message || "error desconocido");
-        }
+      if (exportStatus) {
+        exportStatus.style.display = "block";
+        exportStatus.style.color = "#00C060";
+        exportStatus.textContent = "✓ Exportado correctamente.";
       }
-    }).catch(function () {
-      // Fallback: build export from in-memory state
-      try {
-        var pkg = window.ExportPackage.buildExport({
-          studentName: state.studentName,
-          selectedAvatar: state.selectedAvatar,
-          phaseIndex: state.phaseIndex,
-          exerciseIndex: state.exerciseIndex,
-          score: state.score,
-          maxScore: state.maxScore,
-          attemptLog: state.attemptLog,
-          view: state.view,
-        });
-        window.ExportPackage.exportToFile(pkg);
-
-        if (exportStatus) {
-          exportStatus.style.display = "block";
-          exportStatus.style.color = "#00C060";
-          exportStatus.textContent = "✓ Exportado correctamente.";
-        }
-      } catch (err) {
-        if (exportStatus) {
-          exportStatus.style.display = "block";
-          exportStatus.style.color = "#E5002B";
-          exportStatus.textContent = "✗ Error al exportar: " + (err.message || "error desconocido");
-        }
+    } catch (err) {
+      if (exportStatus) {
+        exportStatus.style.display = "block";
+        exportStatus.style.color = "#E5002B";
+        exportStatus.textContent = "✗ Error al exportar: " + (err.message || "error desconocido");
       }
-    });
+    }
   }
 
   /**
@@ -1609,21 +1609,13 @@
 
     window.ExportPackage.importFromFile(file).then(function (progress) {
       // Structural validation was done by importFromFile.
-      // Now validate indices against our exercise set before saving.
-      if (progress.phaseIndex >= AppExercises.phases.length) {
-        throw new Error("El archivo contiene una fase que no existe en esta versión del simulador.");
+      // Restore recalculates the aggregate before writing the canonical
+      // attempt-log state, so legacy exports with old totals stay compatible.
+      if (_restoreFromProgress(progress)) {
+        saveCurrentProgress();
+        dom.importOk.style.display = "block";
+        dom.importOk.textContent = "Progreso importado correctamente.";
       }
-      var phase = AppExercises.phases[progress.phaseIndex];
-      if (progress.exerciseIndex >= phase.exercises.length) {
-        throw new Error("El archivo contiene un ejercicio que no existe en esta fase.");
-      }
-
-      // Progress is valid for this exercise set — restore
-      if (window.ProgressStore && window.ProgressStore.isAvailable()) {
-        window.ProgressStore.saveProgress(progress).catch(function () {});
-      }
-
-      _restoreFromProgress(progress);
     }).catch(function (err) {
       dom.importError.style.display = "block";
       dom.importError.textContent = "Error al importar: " + (err.message || "archivo inválido");
@@ -2234,6 +2226,7 @@
     dom.importOk = document.getElementById("import-ok");
     dom.btnExport = document.getElementById("btn-export");
     dom.exportStatus = document.getElementById("export-status");
+    dom.storageWarning = document.getElementById("storage-warning");
 
     // Schema reference modal
     dom.btnSchema = document.getElementById("btn-schema");
@@ -2372,6 +2365,7 @@
         // ------------------------------------------------------------------
         if (window.ProgressStore && window.ProgressStore.isAvailable()) {
           window.ProgressStore.loadProgress().then(function (saved) {
+            showStorageRecoveryGuidance();
             if (!saved) return;
 
             // Populate the name field and show the continue banner
@@ -2389,8 +2383,10 @@
               dom.savedBanner.style.display = "block";
             }
           }).catch(function () {
-            // IndexedDB failure → no saved banner, normal start
+            showStorageRecoveryGuidance();
           });
+        } else {
+          showStorageRecoveryGuidance();
         }
       })
       .catch(function (err) {
@@ -2539,6 +2535,61 @@
        */
       initEngine: function () {
         return initEngine();
+      },
+
+      /** Recalculate per-exercise earned credit for scoring tests. */
+      recalculateScore: function (stateOverride) {
+        var savedState = state;
+        try {
+          if (stateOverride) state = stateOverride;
+          _recalculateScore();
+          return state.score;
+        } finally {
+          state = savedState;
+        }
+      },
+
+      /** Restore saved progress with injected state and DOM for regression tests. */
+      restoreFromProgress: function (domOverride, stateOverride, progress) {
+        var savedDom = dom;
+        var savedState = state;
+        try {
+          if (domOverride) dom = domOverride;
+          if (stateOverride) state = stateOverride;
+          _restoreFromProgress(progress);
+          return state;
+        } finally {
+          dom = savedDom;
+          state = savedState;
+        }
+      },
+
+      /** Run the production export path with injected state and DOM. */
+      handleExport: function (stateOverride, domOverride) {
+        var savedState = state;
+        var savedDom = dom;
+        try {
+          if (stateOverride) state = stateOverride;
+          if (domOverride) dom = domOverride;
+          handleExport();
+        } finally {
+          state = savedState;
+          dom = savedDom;
+        }
+      },
+
+      /** Show persistence recovery guidance with an injected DOM and store. */
+      showStorageRecoveryGuidance: function (domOverride, progressStoreOverride) {
+        var savedDom = dom;
+        var savedProgressStore = window.ProgressStore;
+        try {
+          if (domOverride) dom = domOverride;
+          if (progressStoreOverride) window.ProgressStore = progressStoreOverride;
+          showStorageRecoveryGuidance();
+        } finally {
+          dom = savedDom;
+          window.ProgressStore = savedProgressStore;
+        }
       },
 
       /**
@@ -2933,6 +2984,7 @@
       finalDetail: el(),
       btnExport: el(),
       exportStatus: el(),
+      storageWarning: el(),
       btnSchema: el(),
       schemaModal: el(),
       btnSchemaClose: el(),

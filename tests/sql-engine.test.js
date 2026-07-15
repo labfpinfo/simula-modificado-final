@@ -192,9 +192,9 @@ describe("SqlEngine", () => {
     });
   });
 
-  // --- SELECT-only blocking ---
+  // --- Read-only query policy ---
 
-  describe("execute() — SELECT-only blocking", () => {
+  describe("execute() — read-only query policy", () => {
     it("blocks INSERT", () => {
       var result = SqlEngine.execute("INSERT INTO pokemon VALUES (99, 'Mew', 'Psychic', 50)");
       assert.ok(result.error);
@@ -270,6 +270,32 @@ describe("SqlEngine", () => {
       assert.strictEqual(result.error, undefined);
       assert.strictEqual(result.rows.length, 1);
       assert.strictEqual(result.rows[0][1], "Pikachu");
+    });
+
+    it("blocks data-changing CTEs regardless of casing or comments", () => {
+      var queries = [
+        "WITH target AS (SELECT id FROM pokemon) DELETE FROM pokemon WHERE id IN (SELECT id FROM target) RETURNING id",
+        "/* outer */ wItH target AS (SELECT id FROM pokemon) /* mutation */ uPdAtE pokemon SET level = 99 RETURNING id",
+        "WITH target AS (SELECT 99 AS id) iNsErT INTO pokemon (id, name, type, level) SELECT id, 'Mew', 'Psychic', 50 FROM target RETURNING id",
+        "WITH removed AS (DELETE FROM pokemon WHERE id = 1 RETURNING id) SELECT * FROM removed",
+      ];
+
+      queries.forEach(function (sql) {
+        var result = SqlEngine.execute(sql);
+        assert.strictEqual(result.error, "Only one read-only SELECT query is allowed.");
+      });
+    });
+
+    it("blocks control statements and compound queries hidden by comments", () => {
+      [
+        "BEGIN TRANSACTION",
+        "PRAGMA user_version",
+        "SELECT 1; /* separator */ DELETE FROM pokemon",
+        "SELECT 1; -- separator\n UPDATE pokemon SET level = 99",
+      ].forEach(function (sql) {
+        var result = SqlEngine.execute(sql);
+        assert.strictEqual(result.error, "Only one read-only SELECT query is allowed.");
+      });
     });
   });
 

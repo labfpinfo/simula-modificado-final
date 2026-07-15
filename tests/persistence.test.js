@@ -9,8 +9,8 @@
  *   - HTML escaping and filename sanitisation
  *   - Progress data round-trip integrity
  *
- * IndexedDB operations (ProgressStore) are browser-only and covered by
- * manual verification notes.
+ * ProgressStore persistence is exercised through fake-indexeddb so the
+ * production IndexedDB boundary is covered in Node.
  *
  * Run: node --test tests/persistence.test.js
  */
@@ -19,12 +19,18 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const path = require("path");
 const fs = require("fs");
+const { IDBFactory } = require("fake-indexeddb");
 
 // ----------------------------------------------------------------------
 // Load export-package.js (pure functions — no DOM/WASM dependencies for
 // buildExport, validateProgress, generateExportHTML)
 // ----------------------------------------------------------------------
-global.window = {};
+global.window = { AppExerciseBanks: [] };
+
+for (const bankName of ["u1-consultas-basicas.js", "u2-joins.js", "u3-subconsultas.js"]) {
+  eval(fs.readFileSync(path.resolve(__dirname, "..", "src", "exercise-banks", bankName), "utf-8"));
+}
+eval(fs.readFileSync(path.resolve(__dirname, "..", "src", "exercises.js"), "utf-8"));
 
 // ExportPackage loads as IIFE, writes to window.ExportPackage
 var exportPath = path.resolve(__dirname, "..", "src", "export-package.js");
@@ -32,6 +38,13 @@ var exportSrc = fs.readFileSync(exportPath, "utf-8");
 eval(exportSrc);
 
 var ExportPackage = global.window.ExportPackage;
+
+// Load the persistence serializer separately so regression tests can pin the
+// exact IndexedDB record shape without requiring a browser IndexedDB runtime.
+global.window.__PROGRESS_STORE_TEST_HOOKS__ = true;
+var progressStorePath = path.resolve(__dirname, "..", "src", "progress-store.js");
+eval(fs.readFileSync(progressStorePath, "utf-8"));
+var ProgressStoreTestHooks = global.window.ProgressStoreTestHooks;
 
 // ----------------------------------------------------------------------
 // Sample progress fixtures
@@ -225,6 +238,93 @@ describe("ExportPackage — buildExport (WU4)", function () {
         "attemptLog[" + i + "].skipped must default to false when source is missing it");
     }
   });
+
+  it("keeps a skipped entry's complete restoration state in the continuation", function () {
+    var progress = sampleProgress();
+    progress.attemptLog[2] = {
+      exerciseId: "s1-groupby-count",
+      title: "GROUP BY con COUNT",
+      attempts: 3,
+      hintsUsed: 1,
+      solved: false,
+      skipped: true,
+      scoreDelta: -0.85,
+      submittedSql: "",
+      earnedPoints: 0,
+    };
+
+    var entry = ExportPackage.buildExport(progress).continuation.attemptLog[2];
+    assert.deepStrictEqual(entry, {
+      exerciseId: "s1-groupby-count",
+      title: "GROUP BY con COUNT",
+      attempts: 3,
+      hintsUsed: 1,
+      solved: false,
+      skipped: true,
+      scoreDelta: -0.85,
+      submittedSql: "",
+    });
+  });
+});
+
+describe("ProgressStore — attempt-log persistence", function () {
+  it("keeps skipped restoration state while excluding derived earned points", function () {
+    var stored = ProgressStoreTestHooks.cloneAttemptLog([{
+      exerciseId: "s1-groupby-count",
+      title: "GROUP BY con COUNT",
+      attempts: 3,
+      hintsUsed: 1,
+      solved: false,
+      skipped: true,
+      scoreDelta: -0.85,
+      submittedSql: "",
+      earnedPoints: 0,
+    }]);
+
+    assert.deepStrictEqual(stored, [{
+      exerciseId: "s1-groupby-count",
+      title: "GROUP BY con COUNT",
+      attempts: 3,
+      hintsUsed: 1,
+      solved: false,
+      skipped: true,
+      scoreDelta: -0.85,
+      submittedSql: "",
+    }]);
+  });
+
+  it("persists and reloads through the production IndexedDB boundary", async function () {
+    global.indexedDB = new IDBFactory();
+    await global.window.ProgressStore.saveProgress(sampleProgress());
+
+    // Re-evaluate the production store to model a browser reload: only the
+    // IndexedDB database survives, not its in-memory cached connection.
+    delete global.window.ProgressStore;
+    eval(fs.readFileSync(progressStorePath, "utf-8"));
+    const restored = await global.window.ProgressStore.loadProgress();
+
+    assert.strictEqual(restored.studentName, "María García");
+    assert.strictEqual(restored.phaseIndex, 1);
+    assert.strictEqual(restored.attemptLog[1].exerciseId, "g2-and");
+  });
+
+  it("keeps a recovery copy and exposes fallback status when IndexedDB is unavailable", async function () {
+    delete global.indexedDB;
+    const values = new Map();
+    global.localStorage = {
+      getItem: function (key) { return values.has(key) ? values.get(key) : null; },
+      setItem: function (key, value) { values.set(key, String(value)); },
+      removeItem: function (key) { values.delete(key); },
+    };
+    delete global.window.ProgressStore;
+    eval(fs.readFileSync(progressStorePath, "utf-8"));
+    await global.window.ProgressStore.saveProgress(sampleProgress());
+    const restored = await global.window.ProgressStore.loadProgress();
+
+    assert.strictEqual(global.window.ProgressStore.getStatus().backend, "localStorage");
+    assert.strictEqual(restored.studentName, "María García");
+    delete global.localStorage;
+  });
 });
 
 // ----------------------------------------------------------------------
@@ -251,6 +351,22 @@ describe("ExportPackage — generateExportHTML (WU4)", function () {
     var pkg = ExportPackage.buildExport(sampleProgress());
     var html = ExportPackage.generateExportHTML(pkg);
     assert.ok(html.indexOf('script type="application/json" id="continuation-data"') !== -1);
+  });
+
+  it("omits declared aggregate scores from the teacher-visible report and directs recomputation", function () {
+    var html = ExportPackage.generateExportHTML(ExportPackage.buildExport(sampleProgress({
+      score: 999,
+      maxScore: 999,
+    })));
+    var visiblePart = html.split('script type="application/json"')[0];
+
+    assert.ok(visiblePart.indexOf("999.00 / 999.00") === -1);
+    assert.ok(visiblePart.indexOf("no constituyen una calificación") !== -1);
+    assert.ok(visiblePart.indexOf("npm run review-exports") !== -1);
+    var continuation = JSON.parse(html.match(/<script\s+type="application\/json"\s+id="continuation-data"\s*>([\s\S]*?)<\/script>/i)[1]);
+    assert.strictEqual(continuation.score, 999,
+      "continuation data must retain declared scores for learner import/export");
+    assert.strictEqual(continuation.maxScore, 999);
   });
 
   it("continuation JSON is valid and parsable", function () {
@@ -600,25 +716,25 @@ describe("ExportPackage — validateProgress (WU4)", function () {
 
   it("rejects attemptLog entry with negative attempts (R1-WU4-002)", function () {
     var bad = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "e1", title: "ok", attempts: -1, hintsUsed: 0, solved: false, scoreDelta: 0 }] };
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "ok", attempts: -1, hintsUsed: 0, solved: false, skipped: false, scoreDelta: 0 }] };
     assert.throws(function () { ExportPackage.validateProgress(bad); }, /intentos inválido/);
   });
 
   it("rejects attemptLog entry with non-integer attempts (R1-WU4-002)", function () {
     var bad = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "e1", title: "ok", attempts: 1.5, hintsUsed: 0, solved: false, scoreDelta: 0 }] };
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "ok", attempts: 1.5, hintsUsed: 0, solved: false, skipped: false, scoreDelta: 0 }] };
     assert.throws(function () { ExportPackage.validateProgress(bad); }, /intentos inválido/);
   });
 
   it("rejects attemptLog entry with NaN scoreDelta (R1-WU4-002)", function () {
     var bad = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "e1", title: "ok", attempts: 0, hintsUsed: 0, solved: false, scoreDelta: NaN }] };
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "ok", attempts: 0, hintsUsed: 0, solved: false, skipped: false, scoreDelta: NaN }] };
     assert.throws(function () { ExportPackage.validateProgress(bad); }, /Penalización/);
   });
 
   it("rejects attemptLog entry with Infinity hintsUsed (R1-WU4-002)", function () {
     var bad = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "e1", title: "ok", attempts: 0, hintsUsed: Infinity, solved: false, scoreDelta: 0 }] };
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "ok", attempts: 0, hintsUsed: Infinity, solved: false, skipped: false, scoreDelta: 0 }] };
     assert.throws(function () { ExportPackage.validateProgress(bad); }, /pistas inválido/);
   });
 
@@ -666,11 +782,7 @@ describe("ExportPackage — validateProgress (WU4)", function () {
     assert.throws(function () { ExportPackage.validateProgress(bad); }, /vista/);
   });
 
-  // --- Side-menu / skipped-state continuation validation. The fields
-  //     are optional for legacy compatibility, but when present they
-  //     must be the right type — a corrupted file must surface
-  //     immediately rather than silently mis-rendering the side menu
-  //     or the restored skip-feedback.
+  // --- Side-menu / skipped-state continuation validation.
 
   it("accepts continuation with menuCollapsed=true", function () {
     var good = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
@@ -699,21 +811,34 @@ describe("ExportPackage — validateProgress (WU4)", function () {
 
   it("accepts attemptLog entry with skipped=true", function () {
     var good = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "g1", title: "T", attempts: 0, hintsUsed: 0, solved: false, skipped: true, scoreDelta: -0.5 }] };
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "T", attempts: 0, hintsUsed: 0, solved: false, skipped: true, scoreDelta: -0.5 }] };
     assert.doesNotThrow(function () { ExportPackage.validateProgress(good); });
   });
 
-  it("accepts attemptLog entry without skipped (backward compat)", function () {
-    var good = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "g1", title: "T", attempts: 0, hintsUsed: 0, solved: true, scoreDelta: 0 }] };
-    assert.doesNotThrow(function () { ExportPackage.validateProgress(good); },
-      "legacy attemptLog entries without skipped must still import cleanly");
+  it("rejects attemptLog entry without skipped", function () {
+    var bad = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "T", attempts: 0, hintsUsed: 0, solved: true, scoreDelta: 0 }] };
+    assert.throws(function () { ExportPackage.validateProgress(bad); }, /skipped/);
   });
 
   it("rejects attemptLog entry with non-boolean skipped", function () {
     var bad = { version: "1.0", studentName: "T", phaseIndex: 0, exerciseIndex: 0, score: 10, maxScore: 16,
-      attemptLog: [{ exerciseId: "g1", title: "T", attempts: 0, hintsUsed: 0, solved: false, skipped: "yes", scoreDelta: 0 }] };
+      attemptLog: [{ exerciseId: "g1-simple-where", title: "T", attempts: 0, hintsUsed: 0, solved: false, skipped: "yes", scoreDelta: 0 }] };
     assert.throws(function () { ExportPackage.validateProgress(bad); }, /skipped/);
+  });
+
+  it("rejects unknown exercise IDs, duplicates, and non-boolean solved values", function () {
+    var base = ExportPackage.buildExport(sampleProgress()).continuation;
+    base.attemptLog[0].exerciseId = "unknown-exercise";
+    assert.throws(function () { ExportPackage.validateProgress(base); }, /exerciseId/);
+
+    base = ExportPackage.buildExport(sampleProgress()).continuation;
+    base.attemptLog.push(Object.assign({}, base.attemptLog[0]));
+    assert.throws(function () { ExportPackage.validateProgress(base); }, /más de una vez/);
+
+    base = ExportPackage.buildExport(sampleProgress()).continuation;
+    base.attemptLog[0].solved = "true";
+    assert.throws(function () { ExportPackage.validateProgress(base); }, /solved/);
   });
 });
 

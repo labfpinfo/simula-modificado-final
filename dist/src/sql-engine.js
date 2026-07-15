@@ -11,75 +11,140 @@
  *   - Init loads the WASM-based SQL.js runtime and stores raw seed bytes.
  *   - Each execute() call clones the seed into a fresh in-memory database,
  *     runs the student SQL against it, and returns the result set or error.
- *   - Only SELECT statements are allowed (INSERT/UPDATE/DELETE/DROP/etc.
- *     are blocked to protect the seed).
+ *   - Only one read-only SELECT query is allowed. Mutations, transaction or
+ *     control statements, and data-modifying CTEs are blocked before SQLite
+ *     receives them.
  */
 (function () {
   "use strict";
 
-  // SELECT or WITH (CTE) — both are read-only queries. WITH is allowed
-  // because the database is cloned per execution: even an accidental
-  // write inside a CTE-shaped statement cannot damage the seed.
-  var SELECT_RE = /^\s*(SELECT|WITH)\b/i;
+  var FORBIDDEN_KEYWORDS = {
+    ALTER: true,
+    ANALYZE: true,
+    ATTACH: true,
+    BEGIN: true,
+    COMMIT: true,
+    CREATE: true,
+    DELETE: true,
+    DETACH: true,
+    DROP: true,
+    END: true,
+    INSERT: true,
+    PRAGMA: true,
+    REINDEX: true,
+    RELEASE: true,
+    REPLACE: true,
+    ROLLBACK: true,
+    SAVEPOINT: true,
+    TRANSACTION: true,
+    UPDATE: true,
+    VACUUM: true,
+  };
 
   /**
-   * Returns true when `sql` is exactly one SELECT statement.
+   * Tokenize just enough SQLite syntax to enforce the execution boundary.
+   * Quoted values, identifiers, and comments are ignored so their contents
+   * cannot be mistaken for SQL keywords or statement separators. This is a
+   * policy guard, not a general-purpose SQL parser.
+   *
+   * @returns {Array<{value: string, depth: number}>|null}
+   */
+  function _tokenizeForPolicy(sql) {
+    var tokens = [];
+    var depth = 0;
+    var i = 0;
+
+    while (i < sql.length) {
+      var ch = sql[i];
+
+      if (/\s/.test(ch)) {
+        i++;
+      } else if (ch === "-" && sql[i + 1] === "-") {
+        i += 2;
+        while (i < sql.length && sql[i] !== "\n") i++;
+      } else if (ch === "/" && sql[i + 1] === "*") {
+        var commentEnd = sql.indexOf("*/", i + 2);
+        if (commentEnd === -1) return null;
+        i = commentEnd + 2;
+      } else if (ch === "'" || ch === '"' || ch === "`") {
+        var quote = ch;
+        i++;
+        while (i < sql.length) {
+          if (sql[i] === quote) {
+            if (sql[i + 1] === quote) {
+              i += 2;
+              continue;
+            }
+            i++;
+            break;
+          }
+          i++;
+        }
+        if (i > sql.length || sql[i - 1] !== quote) return null;
+      } else if (ch === "[") {
+        var identifierEnd = sql.indexOf("]", i + 1);
+        if (identifierEnd === -1) return null;
+        i = identifierEnd + 1;
+      } else if (ch === "(") {
+        tokens.push({ value: "(", depth: depth });
+        depth++;
+        i++;
+      } else if (ch === ")") {
+        if (depth === 0) return null;
+        depth--;
+        tokens.push({ value: ")", depth: depth });
+        i++;
+      } else if (ch === ";") {
+        tokens.push({ value: ";", depth: depth });
+        i++;
+      } else if (/[A-Za-z_]/.test(ch)) {
+        var start = i;
+        i++;
+        while (i < sql.length && /[A-Za-z0-9_$]/.test(sql[i])) i++;
+        tokens.push({ value: sql.slice(start, i).toUpperCase(), depth: depth });
+      } else {
+        i++;
+      }
+    }
+
+    return depth === 0 ? tokens : null;
+  }
+
+  /**
+   * Returns true when `sql` is exactly one read-only SELECT query.
    *
    * Allows an optional trailing `;` followed by whitespace.  Semicolons
    * inside single-quoted string literals are ignored so that
    * `SELECT 'hello; world'` is not flagged as compound.
    *
-   * Leading SQL comments (-- line comments and slash-star block comments)
-   * are stripped before validation.
-   *
-   * Compound SQL like `SELECT 1; DROP TABLE pokemon` is blocked.
+   * `WITH` is accepted only when its outer statement is SELECT. Forbidden
+   * keywords are rejected even inside a CTE, preventing a mutation from
+   * being hidden behind a WITH prefix.
    */
   function _isSingleSelect(sql) {
-    var trimmed = sql.trim();
+    if (typeof sql !== "string") return false;
 
-    // Strip leading SQL comments (line comments and block comments).
-    // Loop because comments can be stacked.
-    while (trimmed.length > 0) {
-      if (trimmed.startsWith("--")) {
-        // Line comment — strip to end of line
-        var nl = trimmed.indexOf("\n");
-        if (nl === -1) trimmed = "";
-        else trimmed = trimmed.slice(nl + 1).trim();
-      } else if (trimmed.startsWith("/*")) {
-        // Block comment — strip to closing */
-        var end = trimmed.indexOf("*/", 2);
-        if (end === -1) return false; // unterminated block comment
-        trimmed = trimmed.slice(end + 2).trim();
-      } else {
-        break;
-      }
-    }
+    var tokens = _tokenizeForPolicy(sql);
+    if (!tokens || tokens.length === 0) return false;
 
-    if (!SELECT_RE.test(trimmed)) return false;
+    if (tokens[tokens.length - 1].value === ";") tokens.pop();
+    if (tokens.length === 0) return false;
 
-    // Strip optional trailing semicolon and surrounding whitespace
-    if (trimmed.endsWith(";")) {
-      trimmed = trimmed.slice(0, -1).trim();
-    }
-
-    // Walk the remaining string — any unquoted semicolon is a second
-    // statement separator → block it. SQL escapes a single quote inside
-    // a string by doubling it (''), so `SELECT 'it''s; ok'` must be
-    // treated as ONE string literal, not two.
-    var inString = false;
-    for (var i = 0; i < trimmed.length; i++) {
-      var ch = trimmed[i];
-      if (ch === "'") {
-        if (inString && trimmed[i + 1] === "'") {
-          i++; // escaped quote inside a string literal — skip both
-          continue;
-        }
-        inString = !inString;
-      } else if (ch === ";" && !inString) {
+    for (var i = 0; i < tokens.length; i++) {
+      if (tokens[i].value === ";" || FORBIDDEN_KEYWORDS[tokens[i].value]) {
         return false;
       }
     }
-    return true;
+
+    if (tokens[0].value === "SELECT") return true;
+    if (tokens[0].value !== "WITH") return false;
+
+    // A valid CTE query has an outer SELECT after the CTE definitions. The
+    // SQLite engine remains responsible for validating its full grammar.
+    for (var j = 1; j < tokens.length; j++) {
+      if (tokens[j].depth === 0 && tokens[j].value === "SELECT") return true;
+    }
+    return false;
   }
 
   var SqlEngine = {
@@ -155,7 +220,7 @@
       }
 
       if (!_isSingleSelect(sql)) {
-        return { error: "Only a single SELECT statement is allowed." };
+        return { error: "Only one read-only SELECT query is allowed." };
       }
 
       var db = null;

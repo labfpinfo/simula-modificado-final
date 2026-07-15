@@ -80,7 +80,6 @@ var AppTestHooks = global.window.AppTestHooks;
 const SCORE_DEFAULTS = {
   errorPenalty: 0.25,
   hintPenalty: 0.10,
-  skipMultiplier: 2,
 };
 
 /**
@@ -147,14 +146,6 @@ function calcProgress(phases, phaseIndex, exerciseIndex) {
   return { completed: completed, total: total, pct: total > 0 ? Math.round((completed / total) * 100) : 0 };
 }
 
-/**
- * Calculate skip penalty for an exercise.
- */
-function calcSkipPenalty(exercise) {
-  var ep = (exercise.scoring && exercise.scoring.errorPenalty) ? exercise.scoring.errorPenalty : SCORE_DEFAULTS.errorPenalty;
-  return ep * SCORE_DEFAULTS.skipMultiplier;
-}
-
 // ----------------------------------------------------------------------
 // Mock exercise state builder for flow testing
 // ----------------------------------------------------------------------
@@ -168,7 +159,7 @@ function mockAppState(phases) {
     studentName: "Test Student",
     phaseIndex: 0,
     exerciseIndex: 0,
-    score: computeMaxScore(phases),
+    score: 0,
     maxScore: computeMaxScore(phases),
     attemptLog: [],
     currentExerciseState: null,
@@ -228,13 +219,11 @@ function useHint(mockState, ex, hintIndex) {
 }
 
 /** Skip exercise. */
-function skipExercise(mockState, ex) {
-  var penalty = calcSkipPenalty(ex);
-  mockState.score = applyPenalty(mockState.score, penalty);
+function skipExercise(mockState) {
   var log = mockState.attemptLog[mockState.attemptLog.length - 1];
   if (log) {
     log.solved = false;
-    log.scoreDelta -= penalty;
+    log.skipped = true;
   }
 }
 
@@ -514,17 +503,34 @@ describe("App flow — start + exercise lifecycle (WU3)", () => {
   });
 
   describe("Score — penalties", () => {
-    it("applies error penalty on wrong submission", () => {
+    it("production scoring gives unresolved work zero credit", () => {
+      var ex = AppExercises.getExercise(0, 0);
+      var state = {
+        score: AppExercises.maxScore(),
+        maxScore: AppExercises.maxScore(),
+        attemptLog: [{ exerciseId: ex.id, solved: false, scoreDelta: -0.25 }],
+      };
+
+      assert.strictEqual(AppTestHooks.recalculateScore(state), 0,
+        "production scoring must not retain credit for unresolved work");
+
+      state.attemptLog[0].solved = true;
+      assert.strictEqual(AppTestHooks.recalculateScore(state), ex.scoring.points - 0.25,
+        "production scoring must award solved work less its recorded penalties");
+    });
+
+    it("records an error penalty without awarding unresolved credit", () => {
       var ms = mockAppState(AppExercises.phases);
       startExercise(ms);
       var ex = currentExercise(ms, AppExercises);
       var before = ms.score;
 
       submitWrong(ms, ex);
-      assert.ok(ms.score < before);
+      assert.strictEqual(ms.score, before);
+      assert.strictEqual(ms.attemptLog[0].scoreDelta, -SCORE_DEFAULTS.errorPenalty);
     });
 
-    it("applies hint penalty", () => {
+    it("records a hint penalty without awarding unresolved credit", () => {
       var ms = mockAppState(AppExercises.phases);
       // Use phase 2, exercise 0 which has hints
       ms.phaseIndex = 1;
@@ -534,20 +540,20 @@ describe("App flow — start + exercise lifecycle (WU3)", () => {
       var before = ms.score;
 
       useHint(ms, ex, 0);
-      assert.ok(ms.score < before);
+      assert.strictEqual(ms.score, before);
       assert.strictEqual(ms.attemptLog[0].hintsUsed, 1);
+      assert.ok(ms.attemptLog[0].scoreDelta < 0);
     });
 
-    it("applies skip penalty (2x error penalty)", () => {
+    it("leaves a skipped exercise at zero credit", () => {
       var ms = mockAppState(AppExercises.phases);
       startExercise(ms);
-      var ex = currentExercise(ms, AppExercises);
       var before = ms.score;
 
-      skipExercise(ms, ex);
-      var expectedPenalty = calcSkipPenalty(ex);
-      assert.strictEqual(ms.score, Math.max(0, before - expectedPenalty));
+      skipExercise(ms);
+      assert.strictEqual(ms.score, before);
       assert.strictEqual(ms.attemptLog[0].solved, false);
+      assert.strictEqual(ms.attemptLog[0].skipped, true);
     });
 
     it("score never goes below 0", () => {
@@ -611,17 +617,56 @@ describe("App flow — start + exercise lifecycle (WU3)", () => {
         "should have 27 entries after completing all exercises");
     });
 
-    it("skip preserves a penalty entry in the log", () => {
+    it("skip preserves a zero-credit entry in the log", () => {
       var ms = mockAppState(AppExercises.phases);
       startExercise(ms);
-      var ex = currentExercise(ms, AppExercises);
-      skipExercise(ms, ex);
+      skipExercise(ms);
       assert.strictEqual(ms.attemptLog[0].solved, false);
-      assert.ok(ms.attemptLog[0].scoreDelta < 0);
+      assert.strictEqual(ms.attemptLog[0].skipped, true);
+      assert.strictEqual(ms.attemptLog[0].scoreDelta, 0);
     });
   });
 
   describe("Import/Export view restoration (R3-WU4-002)", () => {
+    it("restoration recalculates a stale exported score from exercise state", () => {
+      var solved = AppExercises.phases[0].exercises[0];
+      var state = {
+        score: 0,
+        maxScore: AppExercises.maxScore(),
+        attemptLog: [{
+          exerciseId: solved.id,
+          solved: true,
+          skipped: false,
+          scoreDelta: -0.25,
+        }],
+      };
+
+      assert.strictEqual(AppTestHooks.recalculateScore(state), solved.scoring.points - 0.25,
+        "the score cache must be derived from per-exercise state, not an imported aggregate");
+    });
+
+    it("production restoration rejects invalid indices before rendering", () => {
+      var dom = { importError: mockCreateElement("div") };
+      var state = { phaseIndex: 4, exerciseIndex: 1 };
+      var invalidProgress = [
+        { phaseIndex: -1, exerciseIndex: 0 },
+        { exerciseIndex: 0 },
+        { phaseIndex: 0, exerciseIndex: -1 },
+        { phaseIndex: 0 },
+      ];
+
+      for (var i = 0; i < invalidProgress.length; i++) {
+        dom.importError.style.display = "none";
+        AppTestHooks.restoreFromProgress(dom, state, invalidProgress[i]);
+        assert.strictEqual(dom.importError.style.display, "block",
+          "invalid progress must show the import error");
+        assert.strictEqual(state.phaseIndex, 4,
+          "invalid progress must not apply restored state");
+        assert.strictEqual(state.exerciseIndex, 1,
+          "invalid progress must not apply restored state");
+      }
+    });
+
     /**
      * Mirror of _restoreFromProgress's view-defaulting line:
      *     state.view = saved.view || "exercises";
@@ -855,5 +900,52 @@ describe("App flow — start + exercise lifecycle (WU3)", () => {
       assert.strictEqual(dom.resultContent.children.length, 1);
       assert.strictEqual(dom.resultContent.children[0].className, "empty-result");
     });
+  });
+});
+
+describe("Persistence recovery guidance", function () {
+  it("remains visible when every durable persistence backend is unavailable", function () {
+    var dom = {
+      storageWarning: { style: {}, textContent: "" },
+      exportStatus: { style: {}, textContent: "" },
+    };
+    var unavailableStore = {
+      isAvailable: function () { return false; },
+      getStatus: function () { return { backend: "indexeddb", message: "" }; },
+    };
+
+    AppTestHooks.showStorageRecoveryGuidance(dom, unavailableStore);
+
+    assert.strictEqual(dom.storageWarning.style.display, "block");
+    assert.match(dom.storageWarning.textContent, /Exportá el progreso antes de cerrar el navegador/);
+    assert.strictEqual(dom.exportStatus.textContent, "",
+      "the persistent warning must not depend on transient export status UI");
+
+    var savedStore = global.window.ProgressStore;
+    var savedExportPackage = global.window.ExportPackage;
+    try {
+      global.window.ProgressStore = unavailableStore;
+      global.window.ExportPackage = {
+        buildExport: function () { return {}; },
+        exportToFile: function () {},
+      };
+      AppTestHooks.handleExport({
+        studentName: "Test Student",
+        selectedAvatar: "",
+        phaseIndex: 0,
+        exerciseIndex: 0,
+        score: 0,
+        maxScore: AppExercises.maxScore(),
+        attemptLog: [],
+        view: "exercises",
+      }, dom);
+    } finally {
+      global.window.ProgressStore = savedStore;
+      global.window.ExportPackage = savedExportPackage;
+    }
+
+    assert.strictEqual(dom.storageWarning.style.display, "block");
+    assert.match(dom.storageWarning.textContent, /Exportá el progreso antes de cerrar el navegador/);
+    assert.strictEqual(dom.exportStatus.textContent, "✓ Exportado correctamente.");
   });
 });

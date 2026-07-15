@@ -1,148 +1,155 @@
 #!/usr/bin/env node
-/**
- * tools/review-exports.js
- *
- * CORRECCIÓN EN BLOQUE: agrega las entregas HTML exportadas por los
- * alumnos y genera dos CSV listos para abrir en Excel/LibreOffice.
- *
- * Uso:
- *   node tools/review-exports.js carpeta/con/entregas [salida.csv]
- *
- * Ejemplo:
- *   node tools/review-exports.js ~/Descargas/entregas-1DAW notas-1daw.csv
- *
- * Genera:
- *   salida.csv            — una fila por alumno: nombre, nota, %, nº de
- *                           ejercicios resueltos/saltados, intentos y
- *                           pistas totales, fecha de exportación.
- *   salida-detalle.csv    — una fila por (alumno × ejercicio): intentos,
- *                           pistas, resuelto, saltado, variación de nota.
- *                           Útil para ver QUÉ ejercicios costaron más.
- *
- * Cómo funciona: cada HTML exportado por el simulador lleva embebido un
- * bloque <script type="application/json" id="continuation-data"> con el
- * progreso completo (ver src/export-package.js). Esta herramienta lo
- * extrae y lo tabula. No necesita navegador ni dependencias externas.
- *
- * Nota de evaluación: la puntuación se calcula en el cliente (el
- * navegador del alumno), así que trátala como orientativa — el registro
- * de intentos por ejercicio es más difícil de falsear con coherencia y
- * es el dato interesante para detectar anomalías.
- */
-
 "use strict";
 
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
+const initSqlJs = require("sql.js");
 
-const MARKER_RE =
-  /<script type="application\/json" id="continuation-data">\s*([\s\S]*?)\s*<\/script>/;
+const MARKER_RE = /<script type="application\/json" id="continuation-data">\s*([\s\S]*?)\s*<\/script>/;
+const ROOT = path.resolve(__dirname, "..");
 
-function fail(msg) {
-  console.error("review-exports: " + msg);
-  process.exit(1);
+function csv(value) {
+  const text = String(value == null ? "" : value);
+  return /[;"\n\r]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
 }
 
-const inDir = process.argv[2];
-if (!inDir) {
-  fail("uso: node tools/review-exports.js <carpeta-con-entregas> [salida.csv]");
-}
-if (!fs.existsSync(inDir) || !fs.statSync(inDir).isDirectory()) {
-  fail("'" + inDir + "' no existe o no es una carpeta");
-}
-const outFile = process.argv[3] || "resumen-entregas.csv";
-const outDetail = outFile.replace(/\.csv$/i, "") + "-detalle.csv";
-
-/** Escape a CSV field (quote if it contains ; " or newline). */
-function csv(v) {
-  const s = String(v == null ? "" : v);
-  if (/[;"\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-  return s;
+function num(value) {
+  return String(Math.round(value * 100) / 100).replace(".", ",");
 }
 
-/** Números con coma decimal (formato es-ES para Excel en español). */
-function num(n) {
-  return String(Math.round(n * 100) / 100).replace(".", ",");
-}
-
-const files = fs.readdirSync(inDir).filter((f) => /\.html?$/i.test(f)).sort();
-if (files.length === 0) fail("no hay archivos .html en '" + inDir + "'");
-
-const summaryRows = [];
-const detailRows = [];
-let skippedFiles = 0;
-
-for (const f of files) {
-  const full = path.join(inDir, f);
-  const html = fs.readFileSync(full, "utf8");
-  const m = html.match(MARKER_RE);
-  if (!m) {
-    console.warn("  ⚠ '" + f + "': no contiene datos de continuación — ignorado " +
-      "(¿es realmente un export del simulador?)");
-    skippedFiles++;
-    continue;
+function loadExerciseBank() {
+  const context = vm.createContext({ window: { AppExerciseBanks: [] }, console });
+  const bankDir = path.join(ROOT, "src", "exercise-banks");
+  for (const name of fs.readdirSync(bankDir).filter((name) => name.endsWith(".js")).sort()) {
+    vm.runInContext(fs.readFileSync(path.join(bankDir, name), "utf8"), context, { filename: name });
   }
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "src", "exercises.js"), "utf8"), context, { filename: "exercises.js" });
+  const exercises = new Map();
+  for (const phase of context.window.AppExercises.phases) {
+    for (const exercise of phase.exercises) exercises.set(exercise.id, exercise);
+  }
+  return exercises;
+}
 
-  let data;
+function sameResult(expected, actual, ordered) {
+  if (expected.length !== actual.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (expected[i].columns.join("\u0000") !== actual[i].columns.join("\u0000")) return false;
+    const expectedRows = expected[i].values.map((row) => JSON.stringify(row));
+    const actualRows = actual[i].values.map((row) => JSON.stringify(row));
+    if (!ordered) {
+      expectedRows.sort();
+      actualRows.sort();
+    }
+    if (expectedRows.join("\u0000") !== actualRows.join("\u0000")) return false;
+  }
+  return true;
+}
+
+function runSql(SQL, seed, sql) {
+  const db = new SQL.Database(seed);
   try {
-    data = JSON.parse(m[1]);
-  } catch (e) {
-    console.warn("  ⚠ '" + f + "': JSON embebido ilegible (" + e.message + ") — ignorado");
-    skippedFiles++;
-    continue;
-  }
-
-  const log = Array.isArray(data.attemptLog) ? data.attemptLog : [];
-  const solved = log.filter((e) => e.solved).length;
-  const skipped = log.filter((e) => e.skipped && !e.solved).length;
-  const attempts = log.reduce((a, e) => a + (e.attempts || 0), 0);
-  const hints = log.reduce((a, e) => a + (e.hintsUsed || 0), 0);
-  const pct = data.maxScore > 0 ? (data.score / data.maxScore) * 100 : 0;
-
-  summaryRows.push([
-    csv(data.studentName || "(sin nombre)"),
-    num(data.score || 0),
-    num(data.maxScore || 0),
-    num(pct),
-    solved,
-    skipped,
-    log.length,
-    attempts,
-    hints,
-    csv(data.savedAt || ""),
-    csv(f),
-  ].join(";"));
-
-  for (const e of log) {
-    detailRows.push([
-      csv(data.studentName || "(sin nombre)"),
-      csv(e.exerciseId || ""),
-      csv(e.title || ""),
-      e.attempts || 0,
-      e.hintsUsed || 0,
-      e.solved ? "sí" : "no",
-      e.skipped ? "sí" : "no",
-      num(e.scoreDelta || 0),
-      csv(f),
-    ].join(";"));
+    return { result: db.exec(sql) };
+  } catch (error) {
+    return { error: error.message };
+  } finally {
+    db.close();
   }
 }
 
-const summaryHeader = [
-  "Alumno", "Nota", "Nota máxima", "Porcentaje", "Resueltos", "Saltados",
-  "Ejercicios iniciados", "Intentos totales", "Pistas totales",
-  "Exportado el", "Archivo",
-].join(";");
-const detailHeader = [
-  "Alumno", "Ejercicio (id)", "Ejercicio (título)", "Intentos", "Pistas",
-  "Resuelto", "Saltado", "Variación de nota", "Archivo",
-].join(";");
+async function verifySubmission(data, exercises) {
+  const SQL = await initSqlJs();
+  const seed = fs.readFileSync(path.join(ROOT, "data", "pokemon.sqlite"));
+  const seen = new Set();
+  const entries = [];
+  let verifiedScore = 0;
+  let claimedScore = 0;
+  const log = Array.isArray(data.attemptLog) ? data.attemptLog : [];
 
-// BOM para que Excel abra el UTF-8 (tildes, ñ) correctamente.
-fs.writeFileSync(outFile, "\uFEFF" + summaryHeader + "\n" + summaryRows.join("\n") + "\n");
-fs.writeFileSync(outDetail, "\uFEFF" + detailHeader + "\n" + detailRows.join("\n") + "\n");
+  for (const entry of log) {
+    const exercise = entry && exercises.get(entry.exerciseId);
+    let status = "invalid";
+    let verified = false;
+    let note = "Unknown or duplicate exercise entry.";
+    if (exercise && !seen.has(entry.exerciseId) && typeof entry.solved === "boolean" &&
+        typeof entry.skipped === "boolean" && Number.isInteger(entry.attempts) && entry.attempts >= 0 &&
+        Number.isInteger(entry.hintsUsed) && entry.hintsUsed >= 0 &&
+        typeof entry.scoreDelta === "number" && Number.isFinite(entry.scoreDelta)) {
+      seen.add(entry.exerciseId);
+      const penalty = Math.min(0, entry.scoreDelta);
+      const points = entry.solved ? Math.max(0, ((exercise.scoring && exercise.scoring.points) || 1) + penalty) : 0;
+      claimedScore += points;
+      if (typeof entry.submittedSql === "string" && entry.submittedSql.trim()) {
+        const expected = runSql(SQL, seed, exercise.expectedSql);
+        const submitted = runSql(SQL, seed, entry.submittedSql);
+        verified = !expected.error && !submitted.error && sameResult(expected.result, submitted.result, exercise.ordered !== false);
+        status = verified ? "verified" : "mismatch";
+        note = verified ? "Submitted SQL matches the canonical result." : "Submitted SQL does not match the canonical result.";
+      } else {
+        status = "unverifiable";
+        note = "No submitted SQL was exported (legacy or incomplete evidence).";
+      }
+      if (verified) verifiedScore += Math.max(0, ((exercise.scoring && exercise.scoring.points) || 1) + penalty);
+    }
+    entries.push({ entry, exercise, status, verified, note });
+  }
+  return { entries, verifiedScore, claimedScore, canonicalMaxScore: [...exercises.values()].reduce((sum, ex) => sum + ((ex.scoring && ex.scoring.points) || 1), 0) };
+}
 
-console.log("\nProcesadas " + summaryRows.length + " entrega(s)" +
-  (skippedFiles ? " (" + skippedFiles + " archivo(s) ignorado(s))" : "") + ".");
-console.log("  → " + outFile + " (resumen por alumno)");
-console.log("  → " + outDetail + " (detalle por ejercicio)");
+async function reviewDirectory(inDir, outFile) {
+  const exercises = loadExerciseBank();
+  const files = fs.readdirSync(inDir).filter((file) => /\.html?$/i.test(file)).sort();
+  if (files.length === 0) throw new Error("no HTML exports found");
+  const summaryRows = [];
+  const detailRows = [];
+  let skippedFiles = 0;
+
+  for (const file of files) {
+    const match = fs.readFileSync(path.join(inDir, file), "utf8").match(MARKER_RE);
+    if (!match) { skippedFiles++; continue; }
+    let data;
+    try { data = JSON.parse(match[1]); } catch (_error) { skippedFiles++; continue; }
+    const review = await verifySubmission(data, exercises);
+    const verifiedCount = review.entries.filter((item) => item.status === "verified").length;
+    const unverifiableCount = review.entries.filter((item) => item.status === "unverifiable").length;
+    const invalidCount = review.entries.filter((item) => item.status === "invalid").length;
+    summaryRows.push([
+      csv(data.studentName || "(unnamed)"), num(review.verifiedScore), num(review.canonicalMaxScore),
+      verifiedCount, unverifiableCount, invalidCount,
+      csv("Do not use this as an authoritative grade without verified SQL evidence."), csv(file),
+    ].join(";"));
+    for (const item of review.entries) {
+      const entry = item.entry || {};
+      detailRows.push([
+        csv(data.studentName || "(unnamed)"), csv(entry.exerciseId || ""),
+        csv(item.exercise ? item.exercise.title : ""), entry.attempts || 0, entry.hintsUsed || 0,
+        entry.solved === true ? "yes" : "no", item.status, csv(item.note), csv(file),
+      ].join(";"));
+    }
+  }
+  const detailFile = outFile.replace(/\.csv$/i, "") + "-detail.csv";
+  fs.writeFileSync(outFile, "\uFEFFStudent;Verified score;Canonical maximum;Verified SQL;Unverifiable entries;Invalid entries;Trust limitation;File\n" + summaryRows.join("\n") + "\n");
+  fs.writeFileSync(detailFile, "\uFEFFStudent;Exercise id;Canonical title;Attempts;Hints;Claimed solved;Verification;Evidence note;File\n" + detailRows.join("\n") + "\n");
+  return { processed: summaryRows.length, skippedFiles, outFile, detailFile };
+}
+
+async function main() {
+  const inDir = process.argv[2];
+  if (!inDir || !fs.existsSync(inDir) || !fs.statSync(inDir).isDirectory()) {
+    throw new Error("usage: node tools/review-exports.js <export-directory> [output.csv]");
+  }
+  const result = await reviewDirectory(inDir, process.argv[3] || "submission-review.csv");
+  console.log("Processed " + result.processed + " submission(s)" + (result.skippedFiles ? "; skipped " + result.skippedFiles + " invalid file(s)" : "") + ".");
+  console.log("  " + result.outFile);
+  console.log("  " + result.detailFile);
+}
+
+module.exports = { loadExerciseBank, verifySubmission, reviewDirectory };
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("review-exports: " + error.message);
+    process.exitCode = 1;
+  });
+}

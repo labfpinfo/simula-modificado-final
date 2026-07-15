@@ -403,22 +403,21 @@ describe("handleSkip — does not reveal reference solution", () => {
       "skip must keep solved=false (skipping is not the same as solving)");
   });
 
-  it("applies the skip penalty (2x errorPenalty) to the score", () => {
+  it("leaves a skipped exercise at zero earned credit", () => {
     const state = buildState({ phaseIndex: 0, exerciseIndex: 0 });
-    const ex = AppExercises.phases[0].exercises[0];
-    const before = state.score;
+    state.score = 7;
     state.attemptLog = [buildEntry(0, 0)];
     state.currentExerciseState = {
       attempts: 0, hintsUsed: [], solved: false, skipped: false, lastSql: null,
     };
     const dom = buildDom();
     AppTestHooks.handleSkip(state, dom);
-    const ep = (ex.scoring && ex.scoring.errorPenalty) || 0.25;
-    const expectedPenalty = ep * 2;
-    assert.strictEqual(state.score, Math.max(0, before - expectedPenalty),
-      "skip must deduct 2x errorPenalty from the score (R3-002 skip penalty)");
-    assert.ok(state.attemptLog[0].scoreDelta <= -expectedPenalty,
-      "the log entry's scoreDelta must record the skip penalty");
+    assert.strictEqual(state.score, 0,
+      "a skipped unresolved exercise must earn zero points");
+    assert.strictEqual(state.attemptLog[0].earnedPoints, 0,
+      "the entry must record zero earned points while skipped");
+    assert.strictEqual(state.attemptLog[0].scoreDelta, 0,
+      "skipping must not apply an artificial penalty to later valid credit");
   });
 
   it("uses the feedback-skipped style (not feedback-ok) so it is visually distinct", () => {
@@ -933,5 +932,93 @@ describe("revisit skipped exercise and solve — no duplication, no double-score
     })[0];
     assert.strictEqual(sameEntry, originalEntry,
       "the (0, 0) entry must be the same object — no replacement");
+  });
+});
+
+describe("per-exercise earned-points scoring", () => {
+
+  it("gives all skipped exercises zero credit instead of a passing score", () => {
+    const state = buildState({ score: AppExercises.maxScore() });
+    state.attemptLog = [];
+    AppExercises.phases.forEach(function (phase) {
+      phase.exercises.forEach(function (ex) {
+        state.attemptLog.push({
+          exerciseId: ex.id,
+          title: ex.title,
+          attempts: 0,
+          hintsUsed: 0,
+          solved: false,
+          skipped: true,
+          scoreDelta: 0,
+        });
+      });
+    });
+
+    assert.strictEqual(AppTestHooks.recalculateScore(state), 0,
+      "skipping every exercise must produce 0 / maxScore");
+  });
+
+  it("awards valid credit when a skipped exercise is later solved", () => {
+    const ex = AppExercises.phases[0].exercises[0];
+    const state = buildState({
+      attemptLog: [buildEntry(0, 0, { skipped: true, solved: true, scoreDelta: -0.25 })],
+    });
+
+    assert.strictEqual(AppTestHooks.recalculateScore(state), ex.scoring.points - 0.25,
+      "later solving must earn the exercise's points less its own valid penalties");
+    assert.strictEqual(state.attemptLog[0].earnedPoints, ex.scoring.points - 0.25);
+  });
+
+  it("migrates legacy saved totals from solved entries", () => {
+    const solved = AppExercises.phases[0].exercises[0];
+    const state = buildState({
+      score: AppExercises.maxScore(),
+      attemptLog: [
+        buildEntry(0, 0, { solved: true, scoreDelta: -0.25 }),
+        buildEntry(0, 1, { skipped: true, solved: false, scoreDelta: -0.5 }),
+      ],
+    });
+
+    assert.strictEqual(AppTestHooks.recalculateScore(state), solved.scoring.points - 0.25,
+      "legacy saved totals must be recomputed so unresolved entries receive zero credit");
+  });
+});
+
+describe("export current state", () => {
+  it("does not read a stale IndexedDB snapshot before exporting", () => {
+    const current = buildState({ score: AppExercises.maxScore() });
+    current.attemptLog = [buildEntry(0, 0, {
+      attempts: 1,
+      solved: true,
+      skipped: true,
+      scoreDelta: -0.25,
+    })];
+    const dom = { exportStatus: makeElement("div") };
+    let exportedProgress = null;
+    const previousStore = global.window.ProgressStore;
+    const previousPackage = global.window.ExportPackage;
+
+    global.window.ProgressStore = {
+      isAvailable: function () { return true; },
+      saveProgress: function () { return Promise.resolve(); },
+      loadProgress: function () { throw new Error("export must not read IndexedDB"); },
+    };
+    global.window.ExportPackage = {
+      buildExport: function (progress) { exportedProgress = progress; return {}; },
+      exportToFile: function () {},
+    };
+
+    try {
+      AppTestHooks.handleExport(current, dom);
+    } finally {
+      global.window.ProgressStore = previousStore;
+      global.window.ExportPackage = previousPackage;
+    }
+
+    assert.ok(exportedProgress, "export must use the in-memory progress snapshot");
+    assert.strictEqual(exportedProgress.attemptLog[0].skipped, true);
+    assert.strictEqual(exportedProgress.score,
+      AppExercises.phases[0].exercises[0].scoring.points - 0.25,
+      "export must recalculate score from the just-made attempt before packaging");
   });
 });

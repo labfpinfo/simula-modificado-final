@@ -513,16 +513,15 @@ describe("handlePrevious — score safety", () => {
 
   it("does not change the score just by going back", () => {
     var state = buildState({ phaseIndex: 0, exerciseIndex: 2 });
-    state.score = 12.5;
     state.attemptLog = [
       buildEntry(0, 0, { solved: true }),
       buildEntry(0, 1, { solved: true }),
       buildEntry(0, 2, { attempts: 1, scoreDelta: -0.25 }),
     ];
-    var scoreBefore = state.score;
+    var scoreBefore = AppTestHooks.recalculateScore(state);
     AppTestHooks.handlePrevious(state, null, buildProgressStoreStub());
     assert.strictEqual(state.score, scoreBefore,
-      "handlePrevious must NOT change the score — only the position");
+      "handlePrevious must preserve the score derived from the attempt log");
   });
 
   it("does not introduce extra scoreDelta on the prior entry", () => {

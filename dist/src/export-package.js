@@ -27,9 +27,8 @@
  *   the complete view, not the exercise view).
  *   menuCollapsed (optional, boolean) — preserves the student's side-
  *   menu collapse preference across a cross-browser continuation.
- *   attemptLog entries MAY carry a `skipped` boolean (optional) so the
- *   side menu and restored render treat the entry as navigable without
- *   revealing the reference solution.
+ *   attemptLog entries carry strict boolean `solved` and `skipped` values;
+ *   imports reject malformed or duplicate entries before app state changes.
  */
 
 (function () {
@@ -264,6 +263,7 @@
           // Default is false for legacy exports that did not carry it.
           skipped: entry.skipped === true,
           scoreDelta: typeof entry.scoreDelta === "number" ? entry.scoreDelta : 0,
+          submittedSql: typeof entry.submittedSql === "string" ? entry.submittedSql : "",
         };
       }),
       savedAt: new Date().toISOString(),
@@ -297,9 +297,6 @@
    */
   function _renderExportHTML(review, continuationJSON, exportedAtISO) {
     var studentName = _escapeHTML(review.studentName || "(sin nombre)");
-    var score = (typeof review.score === "number" ? review.score : 0).toFixed(2);
-    var maxScore = (typeof review.maxScore === "number" ? review.maxScore : 0).toFixed(2);
-    var pct = review.percentage || 0;
     var totalExercises = review.totalExercises || 0;
     var solvedExercises = review.solvedExercises || 0;
     var totalAttempts = review.totalAttempts || 0;
@@ -339,9 +336,7 @@
       '  .report{max-width:600px;margin:0 auto;background:#FDFAF5;border:1.5px solid #D6CCBA;border-radius:12px;padding:2rem;box-shadow:0 2px 8px rgba(0,0,0,0.06)}\n' +
       '  h1{font-size:1.3rem;margin-bottom:0.2rem}\n' +
       '  .meta{font-size:0.82rem;color:#7A6E5A;margin-bottom:1.5rem}\n' +
-      '  .score-section{background:#FAFAF5;border:1px solid #D6CCBA;border-radius:8px;padding:1rem;margin-bottom:1.2rem;text-align:center}\n' +
-      '  .score-big{font-size:2.4rem;font-weight:700;color:#00C060;font-family:monospace}\n' +
-      '  .score-pct{font-size:0.9rem;color:#7A6E5A}\n' +
+      '  .review-guidance{background:#FFFBF2;border:1px solid #D4A000;border-radius:8px;padding:0.8rem 1rem;margin-bottom:1.2rem;font-size:0.82rem;line-height:1.5;color:#5D4300}\n' +
       '  .stats{display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:1.2rem}\n' +
       '  .stat{background:#FAFAF5;border:1px solid #D6CCBA;border-radius:6px;padding:0.6rem;text-align:center}\n' +
       '  .stat-val{font-size:1.3rem;font-weight:700;color:#4A4030;font-family:monospace}\n' +
@@ -357,9 +352,8 @@
       '<div class="report">\n' +
       '  <h1>Simulacro SQL — PokemonDB</h1>\n' +
       '  <p class="meta">Estudiante: <strong>' + studentName + '</strong><br>Exportado: ' + exportedAt + '</p>\n' +
-      '  <div class="score-section">\n' +
-      '    <div class="score-big">' + score + ' / ' + maxScore + '</div>\n' +
-      '    <div class="score-pct">' + pct + '%</div>\n' +
+      '  <div class="review-guidance">\n' +
+      '    Los datos de actividad de este archivo son declarados por el estudiante y no constituyen una calificación. Validá las consultas y recalculá la nota con <code>npm run review-exports -- &lt;carpeta-de-exportaciones&gt;</code>.\n' +
       '  </div>\n' +
       '  <div class="stats">\n' +
       '    <div class="stat"><div class="stat-val">' + solvedExercises + ' / ' + totalExercises + '</div><div class="stat-label">Resueltos</div></div>\n' +
@@ -450,13 +444,13 @@
     if (typeof data.studentName !== "string") {
       throw new Error("Los datos no incluyen nombre de estudiante — archivo incompleto.");
     }
-    if (typeof data.phaseIndex !== "number" || data.phaseIndex < 0) {
+    if (!_isNonNegativeInteger(data.phaseIndex)) {
       throw new Error("Los datos no incluyen fase válida.");
     }
-    if (typeof data.exerciseIndex !== "number" || data.exerciseIndex < 0) {
+    if (!_isNonNegativeInteger(data.exerciseIndex)) {
       throw new Error("Los datos no incluyen ejercicio válido.");
     }
-    if (typeof data.score !== "number" || !isFinite(data.score)) {
+    if (typeof data.score !== "number" || !isFinite(data.score) || data.score < 0) {
       throw new Error("Los datos no incluyen puntuación válida.");
     }
     if (typeof data.maxScore !== "number" || !isFinite(data.maxScore) || data.maxScore <= 0) {
@@ -465,7 +459,7 @@
     if (!Array.isArray(data.attemptLog)) {
       throw new Error("Los datos no incluyen registro de intentos.");
     }
-    _validateAttemptLogEntries(data.attemptLog);
+    _validateAttemptLogEntries(data.attemptLog, _knownExerciseIds());
     // View is optional in the continuation payload; when present it must
     // be one of the allowed app screen names.  Missing or invalid values
     // are normalised to "exercises" so legacy exports still import cleanly.
@@ -492,19 +486,44 @@
     return raw === "start" || raw === "exercises" || raw === "complete";
   }
 
+  function _isNonNegativeInteger(value) {
+    return typeof value === "number" && isFinite(value) && value >= 0 && Math.floor(value) === value;
+  }
+
+  /** Return the exercise IDs from the currently loaded canonical bank. */
+  function _knownExerciseIds() {
+    if (!window.AppExercises || !Array.isArray(window.AppExercises.phases)) {
+      throw new Error("No se pudo validar la importación: el banco canónico de ejercicios no está cargado.");
+    }
+    var ids = {};
+    for (var pi = 0; pi < window.AppExercises.phases.length; pi++) {
+      var exercises = window.AppExercises.phases[pi].exercises || [];
+      for (var ei = 0; ei < exercises.length; ei++) ids[exercises[ei].id] = true;
+    }
+    return ids;
+  }
+
   /**
    * Validate each attemptLog entry has the expected schema and safe values.
    * @param {Array} entries
    * @throws {Error}
    */
-  function _validateAttemptLogEntries(entries) {
+  function _validateAttemptLogEntries(entries, knownExerciseIds) {
+    var seen = {};
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       if (!e || typeof e !== "object") {
         throw new Error("Entrada de intentos inválida en posición " + i + ".");
       }
-      if (typeof e.exerciseId !== "string") {
+      if (typeof e.exerciseId !== "string" || !knownExerciseIds[e.exerciseId]) {
         throw new Error("Entrada de intentos sin exerciseId en posición " + i + ".");
+      }
+      if (seen[e.exerciseId]) {
+        throw new Error("El ejercicio " + e.exerciseId + " aparece más de una vez en la importación.");
+      }
+      seen[e.exerciseId] = true;
+      if (typeof e.title !== "string") {
+        throw new Error("Título de ejercicio inválido en posición " + i + ".");
       }
       if (typeof e.attempts !== "number" || !isFinite(e.attempts) || e.attempts < 0 || Math.floor(e.attempts) !== e.attempts) {
         throw new Error("Número de intentos inválido en posición " + i + ".");
@@ -515,12 +534,14 @@
       if (typeof e.scoreDelta !== "number" || !isFinite(e.scoreDelta)) {
         throw new Error("Penalización inválida en posición " + i + ".");
       }
-      // `skipped` is optional on legacy exports (pre-WU6 skip-no-reveal
-      // feature). When present, it MUST be a boolean — a wrong-typed
-      // value is rejected so a corrupted file surfaces immediately
-      // instead of silently mis-rendering the side menu.
-      if (e.skipped !== undefined && typeof e.skipped !== "boolean") {
+      if (typeof e.solved !== "boolean") {
+        throw new Error("Valor de solved no válido en posición " + i + ".");
+      }
+      if (typeof e.skipped !== "boolean") {
         throw new Error("Valor de skipped no válido en posición " + i + ".");
+      }
+      if (e.submittedSql !== undefined && typeof e.submittedSql !== "string") {
+        throw new Error("SQL enviado no válido en posición " + i + ".");
       }
     }
   }

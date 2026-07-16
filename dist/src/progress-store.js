@@ -14,8 +14,8 @@
  *   Key: "current" (single-session per browser)
  *
    * Stored progress shape:
-   *   { id, studentName, phaseIndex, exerciseIndex, score, maxScore,
-   *     attemptLog, view, savedAt }
+    *   { id, studentName, phaseIndex, exerciseIndex, score, maxScore,
+    *     attemptLog, rewards, view, savedAt }
    *   attemptLog entries preserve solved/skipped state and penalties; score
    *   remains an app-calculated cache and is recalculated on restore.
  *
@@ -168,6 +168,7 @@
       score: _safeNum(progress.score, 0),
       maxScore: _safeNum(progress.maxScore, 0),
       attemptLog: _cloneAttemptLog(progress.attemptLog || []),
+      rewards: _cloneRewards(progress.rewards || []),
       view: progress.view || "exercises",
       savedAt: new Date().toISOString(),
       menuCollapsed: progress.menuCollapsed === true,
@@ -316,6 +317,15 @@
     return out;
   }
 
+  function _cloneRewards(rewards) {
+    if (!Array.isArray(rewards)) return [];
+    var out = [];
+    for (var i = 0; i < rewards.length; i++) {
+      if (typeof rewards[i] === "string") out.push(rewards[i]);
+    }
+    return out;
+  }
+
   /**
    * Validate a loaded record has the expected shape.
    * Returns the record if valid, null otherwise.
@@ -365,6 +375,7 @@
   if (window.__PROGRESS_STORE_TEST_HOOKS__) {
     window.ProgressStoreTestHooks = {
       cloneAttemptLog: _cloneAttemptLog,
+      cloneRewards: _cloneRewards,
       validateAndReturn: _validateAndReturn,
     };
   }

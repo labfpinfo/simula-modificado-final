@@ -138,6 +138,15 @@ describe("ExportPackage — buildExport (WU4)", function () {
     assert.strictEqual(c.attemptLog[0].title, "Filtro con WHERE");
   });
 
+  it("continuation carries companion unlock ids while keeping the field optional for old saves", function () {
+    var pkg = ExportPackage.buildExport(sampleProgress({ rewards: ["u1-basics", "recovery"] }));
+    assert.deepStrictEqual(pkg.continuation.rewards, ["u1-basics", "recovery"]);
+
+    var legacy = sampleProgress();
+    delete legacy.rewards;
+    assert.doesNotThrow(function () { ExportPackage.validateProgress(ExportPackage.buildExport(legacy).continuation); });
+  });
+
   it("handles empty attemptLog", function () {
     var pkg = ExportPackage.buildExport({
       studentName: "Test",
@@ -293,9 +302,9 @@ describe("ProgressStore — attempt-log persistence", function () {
     }]);
   });
 
-  it("persists and reloads through the production IndexedDB boundary", async function () {
+  it("persists and reloads companion unlock ids through the production IndexedDB boundary", async function () {
     global.indexedDB = new IDBFactory();
-    await global.window.ProgressStore.saveProgress(sampleProgress());
+    await global.window.ProgressStore.saveProgress(sampleProgress({ rewards: ["u1-basics", "recovery"] }));
 
     // Re-evaluate the production store to model a browser reload: only the
     // IndexedDB database survives, not its in-memory cached connection.
@@ -306,6 +315,7 @@ describe("ProgressStore — attempt-log persistence", function () {
     assert.strictEqual(restored.studentName, "María García");
     assert.strictEqual(restored.phaseIndex, 1);
     assert.strictEqual(restored.attemptLog[1].exerciseId, "g2-and");
+    assert.deepStrictEqual(restored.rewards, ["u1-basics", "recovery"]);
   });
 
   it("keeps a recovery copy and exposes fallback status when IndexedDB is unavailable", async function () {
@@ -497,6 +507,14 @@ describe("ExportPackage — round-trip integrity (WU4)", function () {
     assert.strictEqual(extracted.attemptLog[2].scoreDelta, -0.85);
   });
 
+  it("round-trip preserves rewards through continuation HTML", function () {
+    var progress = sampleProgress({ rewards: ["u2-joins", "recovery"] });
+    var html = ExportPackage.generateExportHTML(ExportPackage.buildExport(progress));
+    var match = html.match(/<script\s+type="application\/json"\s+id="continuation-data"\s*>([\s\S]*?)<\/script>/i);
+    var validated = ExportPackage.validateProgress(JSON.parse(match[1].trim()));
+    assert.deepStrictEqual(validated.rewards, ["u2-joins", "recovery"]);
+  });
+
   // --- R3-WU4-002: completed export must round-trip through HTML and
   //     re-import with view='complete' so the app lands on the complete
   //     screen, not the exercise screen. ---
@@ -581,6 +599,8 @@ describe("ExportPackage — round-trip integrity (WU4)", function () {
     assert.strictEqual(validated.view, undefined,
       "legacy continuation must keep view=undefined — app.js uses " +
       "saved.view || 'exercises' to fall back safely");
+    assert.strictEqual(validated.rewards, undefined,
+      "legacy continuation without rewards must remain import-compatible");
   });
 
   // --- Side-menu / skipped-state round-trip (cross-browser continuation).

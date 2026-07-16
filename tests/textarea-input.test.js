@@ -232,9 +232,9 @@ describe("textarea keydown — behavioural drive", () => {
 
 describe("textarea — JS .value read/write contract", () => {
 
-  it("handleSubmit reads from dom.queryInput.value", () => {
-    assert.ok(/dom\.queryInput\.value\.trim\s*\(\s*\)/.test(appSrc),
-      "handleSubmit must read dom.queryInput.value (textarea exposes .value, same as <input>)");
+  it("preserves entered SQL formatting while using trim only to reject blank input", () => {
+    assert.match(appSrc, /var sql = dom\.queryInput\.value;\s*if \(!sql\.trim\(\)\) return;/,
+      "handleSubmit must keep the original textarea value so multiline formatting is submitted unchanged");
   });
 
   it("renderers write the value via dom.queryInput.value (textarea setter)", () => {

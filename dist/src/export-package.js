@@ -21,7 +21,7 @@
  * Structure:
  *   ExportPackage = { version, exportedAt, review, continuation: Progress }
  *   Progress = { studentName, phaseIndex, exerciseIndex, score, maxScore,
- *                view, menuCollapsed, attemptLog, savedAt }
+   *                view, menuCollapsed, attemptLog, rewards, savedAt }
  *   view is one of: "start" | "exercises" | "complete" — preserved so
  *   import restores the correct screen (e.g. completed exports land on
  *   the complete view, not the exercise view).
@@ -249,6 +249,7 @@
       // IndexedDB (ProgressStore) since the WU5 menu-collapse feature,
       // so a cross-browser continuation should also carry it.
       menuCollapsed: progress.menuCollapsed === true,
+      rewards: _cloneRewards(progress.rewards),
       attemptLog: (progress.attemptLog || []).map(function (entry) {
         return {
           exerciseId: entry.exerciseId || "",
@@ -283,6 +284,15 @@
       return raw;
     }
     return "exercises";
+  }
+
+  function _cloneRewards(rewards) {
+    if (!Array.isArray(rewards)) return [];
+    var out = [];
+    for (var i = 0; i < rewards.length; i++) {
+      if (typeof rewards[i] === "string") out.push(rewards[i]);
+    }
+    return out;
   }
 
   // ==========================================================================
@@ -474,7 +484,20 @@
     if (data.menuCollapsed !== undefined && typeof data.menuCollapsed !== "boolean") {
       throw new Error("Valor de menuCollapsed no válido en la continuación.");
     }
+    // Rewards were added after the first continuation format. They are
+    // optional for legacy files and recalculated from attemptLog on restore.
+    if (data.rewards !== undefined && !_hasValidRewards(data.rewards)) {
+      throw new Error("Reconocimientos no válidos en la continuación.");
+    }
     return data;
+  }
+
+  function _hasValidRewards(rewards) {
+    if (!Array.isArray(rewards)) return false;
+    for (var i = 0; i < rewards.length; i++) {
+      if (typeof rewards[i] !== "string") return false;
+    }
+    return true;
   }
 
   /**

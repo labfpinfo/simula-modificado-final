@@ -1,7 +1,7 @@
 {
-  "builtAt": "2026-07-15T19:27:47.426Z",
+  "builtAt": "2026-07-16T01:26:34.560Z",
   "files": {
-    "index.html": "19a514e5a634726ca22b252399321486b50fedac055d515b7876b95ffec4927e",
+    "index.html": "419c472b62b81238f8e336ab96d2955a65bd247386de56abdcc70d6c343829fc",
     "vendor/sql-asm.js": "ddabd44184435b2189fa5f98dacc6b9512723aced2a87581e26ed17a46256c09",
     "vendor/sql.js-LICENSE": "60a3f6e4d7b29b4321359e683b36cf198d24f58e24582070f56e6fa89d5ee2be",
     "src/sql-engine.js": "ac5d8433a8ed8562fabc8086f7a6f0695290f048c5af8e9969081ba13a21bda3",
@@ -10,10 +10,10 @@
     "src/exercise-banks/u2-joins.js": "61128b5afa0e569bdb7db2af5c35986b5ce172c5e6c9a5d203a6ca272a8b90a1",
     "src/exercise-banks/u3-subconsultas.js": "5e3d1a5e7578650474efb01b0b69015a02449fd3e4c33409ede20b80596f8836",
     "src/exercises.js": "6dac7ba50184f5becb03831984cfea96b7c161fbc6fd43d1ddcd75028929e3fd",
-    "src/progress-store.js": "f1d0d4ded0f7605d302f94f8c838ef0bb6ebc34cc5b026aa6880e75161106668",
-    "src/export-package.js": "a232af6bdd9909b9000269dc1751a45817f52ee8bb38d63f4601a24a5c1b12d9",
+    "src/progress-store.js": "dca191a41718f0d1503faf6b85d327bae1641c9d5ed2926a0fbaaea47309ef13",
+    "src/export-package.js": "39ec61140be239f8fa20a4e0775abe79b85ef132492b5f715f24e3c210c3aca3",
     "src/pokemon-seed.js": "8b19733b4f1238bdb034b1298fe60b7732088fd7b83135ec9f1b0e4f15762534",
     "src/schema-reference.js": "d9d9d25c5bf243456f03c379bbdc8a554672634a4f5d29cc71bfb5e772661da4",
-    "src/app.js": "49f0af247cc4672ad43d89b0a09ebb299f7fc45e488a0e8b80b01d18f17ae53c"
+    "src/app.js": "5e51e181b18a7ec3f101fa68d71eb8aa9881861ed4eb7d86cbae8e8718c780ae"
   }
 }

@@ -48,6 +48,7 @@ global.window.__APP_TEST_HOOKS__ = true;
  */
 function mockCreateElement(tag) {
   var children = [];
+  var attributes = {};
   return {
     tagName: tag,
     textContent: "",
@@ -55,6 +56,9 @@ function mockCreateElement(tag) {
     className: "",
     children: children,
     appendChild: function (child) { children.push(child); return child; },
+    setAttribute: function (name, value) { attributes[name] = String(value); },
+    getAttribute: function (name) { return attributes[name] || null; },
+    addEventListener: function () {},
   };
 }
 
@@ -947,5 +951,269 @@ describe("Persistence recovery guidance", function () {
     assert.strictEqual(dom.storageWarning.style.display, "block");
     assert.match(dom.storageWarning.textContent, /Exportá el progreso antes de cerrar el navegador/);
     assert.strictEqual(dom.exportStatus.textContent, "✓ Exportado correctamente.");
+  });
+});
+
+describe("Pedagogical rewards", function () {
+  function solvedEntriesForUnit(unitPrefix, overrides) {
+    var entries = [];
+    for (var pi = 0; pi < AppExercises.phases.length; pi++) {
+      var phase = AppExercises.phases[pi];
+      if (phase.id.indexOf(unitPrefix + "-") !== 0) continue;
+      for (var ei = 0; ei < phase.exercises.length; ei++) {
+        var ex = phase.exercises[ei];
+        entries.push({
+          exerciseId: ex.id,
+          title: ex.title,
+          solved: true,
+          skipped: false,
+          attempts: 1,
+          hintsUsed: 0,
+          scoreDelta: 0,
+        });
+      }
+    }
+    if (overrides) overrides(entries);
+    return entries;
+  }
+
+  it("recognises a unit only when every exercise in its existing learning block is solved", function () {
+    var complete = { attemptLog: solvedEntriesForUnit("u1"), rewards: [] };
+    assert.deepStrictEqual(AppTestHooks.recalculateRewards(complete), ["u1-basics"]);
+
+    var incomplete = { attemptLog: solvedEntriesForUnit("u1"), rewards: [] };
+    incomplete.attemptLog[incomplete.attemptLog.length - 1].solved = false;
+    assert.deepStrictEqual(AppTestHooks.recalculateRewards(incomplete), []);
+  });
+
+  it("does not make hints a condition for competence recognition", function () {
+    var state = {
+      attemptLog: solvedEntriesForUnit("u2", function (entries) {
+        entries[0].hintsUsed = 2;
+      }),
+      rewards: [],
+    };
+    assert.deepStrictEqual(AppTestHooks.recalculateRewards(state), ["u2-joins"]);
+  });
+
+  it("recognises recovery after a later solution following an error or skip", function () {
+    var afterError = {
+      attemptLog: [{ exerciseId: "g1-simple-where", solved: true, skipped: false, attempts: 2, hintsUsed: 0, scoreDelta: -0.25 }],
+      rewards: [],
+    };
+    assert.deepStrictEqual(AppTestHooks.recalculateRewards(afterError), ["recovery"]);
+
+    var afterSkip = {
+      attemptLog: [{ exerciseId: "g1-simple-where", solved: true, skipped: true, attempts: 1, hintsUsed: 0, scoreDelta: 0 }],
+      rewards: [],
+    };
+    assert.deepStrictEqual(AppTestHooks.recalculateRewards(afterSkip), ["recovery"]);
+  });
+
+  it("renders earned companions and locked companions with their real criterion", function () {
+    var dom = { rewardsSummary: mockCreateElement("p"), rewardsList: mockCreateElement("ul") };
+    AppTestHooks.renderRewards(dom, { attemptLog: [], rewards: ["recovery"] });
+
+    assert.match(dom.rewardsSummary.textContent, /1 compañero desbloqueado/);
+    assert.strictEqual(dom.rewardsList.children.length, 4);
+    assert.match(dom.rewardsList.children[0].className, /locked/);
+    assert.strictEqual(dom.rewardsList.children[0].children[1].textContent, "Flarín");
+    assert.match(dom.rewardsList.children[0].children[3].textContent, /0 de 12 ejercicios resueltos/);
+    assert.match(dom.rewardsList.children[3].className, /earned/);
+    assert.strictEqual(dom.rewardsList.children[3].children[1].textContent, "Voltis");
+    assert.match(dom.rewardsList.children[3].children[3].textContent, /después de un error o de haberlo saltado/);
+  });
+
+  it("shows a non-blocking visual unlock and removes its content on dismissal", function () {
+    var originalSetTimeout = global.setTimeout;
+    var dismiss;
+    global.setTimeout = function (callback) { dismiss = callback; return {}; };
+    try {
+      var unlock = mockCreateElement("div");
+      AppTestHooks.showRewardUnlock({ rewardUnlock: unlock }, ["u1-basics"]);
+
+      assert.strictEqual(unlock.style.display, "flex");
+      assert.strictEqual(unlock.getAttribute("aria-hidden"), "false");
+      assert.strictEqual(unlock.children.length, 3);
+      assert.match(unlock.children[0].textContent, /Nuevo compañero desbloqueado/);
+      assert.strictEqual(unlock.children[1].getAttribute("aria-label"), "Flarín");
+
+      assert.strictEqual(typeof dismiss, "function");
+      AppTestHooks.dismissRewardUnlock({ rewardUnlock: unlock });
+      assert.strictEqual(unlock.style.display, "none");
+      assert.strictEqual(unlock.textContent, "");
+      assert.strictEqual(unlock.getAttribute("aria-hidden"), "true");
+    } finally {
+      AppTestHooks.clearTransientMessages();
+      global.setTimeout = originalSetTimeout;
+    }
+  });
+
+  it("exposes the private progress and rewards area without ranking or streak language", function () {
+    var index = fs.readFileSync(path.resolve(__dirname, "..", "index.html"), "utf-8");
+    assert.match(index, /id="rewards-list"/);
+    assert.match(index, /Compañeros desbloqueables/);
+    assert.match(index, /id="reward-unlock"[\s\S]*role="status"/);
+    assert.match(index, /prefers-reduced-motion/);
+    assert.doesNotMatch(index, /ranking|clasificaci[oó]n|racha|temporizador/i);
+  });
+});
+
+describe("First-pass assessment and continuity safeguards", function () {
+  it("uses contextual feedback without browser alerts or generic encouragement", function () {
+    var source = fs.readFileSync(path.resolve(__dirname, "..", "src", "app.js"), "utf-8");
+
+    assert.doesNotMatch(source, /\balert\s*\(/,
+      "learner feedback must not invoke a blocking browser alert");
+    assert.doesNotMatch(source, /Bien hecho! Tu SQL va tomando forma|Cuando estés listo\/a, pulsa Siguiente/,
+      "generic encouragement must not accompany every result");
+  });
+
+  it("dismisses only transient confirmations after five seconds and cancels them on rerender", function () {
+    var originalSetTimeout = global.setTimeout;
+    var originalClearTimeout = global.clearTimeout;
+    var scheduled = [];
+    global.setTimeout = function (callback, delay) {
+      var timer = { callback: callback, delay: delay, cleared: false };
+      scheduled.push(timer);
+      return timer;
+    };
+    global.clearTimeout = function (timer) { timer.cleared = true; };
+
+    try {
+      var confirmation = { style: { display: "block" }, textContent: "✓ Correcto" };
+      var learningFeedback = { style: { display: "block" }, textContent: "Revisa el resultado" };
+
+      AppTestHooks.showTransientMessage(confirmation);
+      assert.strictEqual(scheduled.length, 1);
+      assert.strictEqual(scheduled[0].delay, 5000,
+        "confirmation timing should remain within the agreed 4-6 second range");
+      scheduled[0].callback();
+      assert.strictEqual(confirmation.style.display, "none");
+      assert.strictEqual(confirmation.textContent, "");
+      assert.strictEqual(learningFeedback.style.display, "block",
+        "learning feedback must not be scheduled or hidden automatically");
+
+      confirmation.style.display = "block";
+      confirmation.textContent = "✓ Exportado";
+      AppTestHooks.showTransientMessage(confirmation);
+      AppTestHooks.clearTransientMessages();
+      assert.strictEqual(scheduled[1].cleared, true,
+        "context changes must cancel pending confirmation timers");
+      scheduled[1].callback();
+      assert.strictEqual(confirmation.style.display, "block",
+        "a cancelled timer must not update a rerendered message");
+    } finally {
+      AppTestHooks.clearTransientMessages();
+      global.setTimeout = originalSetTimeout;
+      global.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  it("dismisses a correct-answer container without destroying its reusable children", function () {
+    var originalSetTimeout = global.setTimeout;
+    var scheduled;
+    global.setTimeout = function (callback) {
+      scheduled = callback;
+      return {};
+    };
+
+    try {
+      var confirmation = { style: { display: "block" } };
+      var content = { textContent: "✓ Correcto" };
+      var sql = { style: { display: "block" }, textContent: "SELECT 1" };
+      AppTestHooks.showTransientMessage(confirmation, function () {
+        confirmation.style.display = "none";
+        content.textContent = "";
+        sql.textContent = "";
+        sql.style.display = "none";
+      });
+      scheduled();
+      assert.strictEqual(confirmation.style.display, "none");
+      assert.strictEqual(content.textContent, "");
+      assert.strictEqual(sql.textContent, "");
+      assert.strictEqual(sql.style.display, "none");
+    } finally {
+      AppTestHooks.clearTransientMessages();
+      global.setTimeout = originalSetTimeout;
+    }
+  });
+
+  it("keeps errors and progressive hints outside the timeout path", function () {
+    var source = fs.readFileSync(path.resolve(__dirname, "..", "src", "app.js"), "utf-8");
+    var feedbackFn = source.match(/function\s+renderFeedback\s*\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/);
+    var hintFn = source.match(/function\s+revealHint\s*\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/);
+    assert.ok(feedbackFn);
+    assert.ok(hintFn);
+    assert.match(feedbackFn[1], /if \(matched\)[\s\S]*_showTransientMessage\(dom\.feedbackOk,/);
+    assert.strictEqual((feedbackFn[1].match(/_showTransientMessage\(/g) || []).length, 1,
+      "only the correct-answer confirmation may be hidden automatically");
+    assert.doesNotMatch(hintFn[1], /_showTransientMessage/,
+      "progressive hints must not be hidden automatically");
+  });
+
+  it("exam rendering suppresses hints, aids, and reference SQL after a correct answer", function () {
+    var examPhaseIndex = 2;
+    var examExercise = AppExercises.phases[examPhaseIndex].exercises[0];
+    var dom = {
+      statusPhase: mockCreateElement("span"), statusStep: mockCreateElement("span"),
+      statusScore: mockCreateElement("span"), progressFill: mockCreateElement("div"),
+      exerciseCard: mockCreateElement("div"), modeBadge: mockCreateElement("span"),
+      exerciseTitle: mockCreateElement("span"), exerciseEnunciado: mockCreateElement("div"),
+      expectedSqlDisplay: mockCreateElement("div"), expectedSqlText: mockCreateElement("code"),
+      feedbackOk: mockCreateElement("div"), feedbackOkContent: mockCreateElement("div"),
+      feedbackOkSql: mockCreateElement("span"), feedbackErr: mockCreateElement("div"),
+      resultDisplay: mockCreateElement("div"), queryInput: mockCreateElement("textarea"),
+      btnSubmit: mockCreateElement("button"), btnSkip: mockCreateElement("button"),
+      btnNext: mockCreateElement("button"), btnPrev: mockCreateElement("button"),
+      aidsRow: mockCreateElement("div"), aidsContextBox: mockCreateElement("div"),
+      aidsGuideBox: mockCreateElement("div"), solutionNote: mockCreateElement("div"),
+      hintsWrap: mockCreateElement("div"), resultContent: mockCreateElement("div"),
+    };
+    dom.exerciseCard.classList = { add: function () {} };
+    dom.modeBadge.classList = { add: function () {} };
+    dom.feedbackOk.classList = { add: function () {}, remove: function () {} };
+    dom.btnPrev.setAttribute = function () {};
+    var state = {
+      phaseIndex: examPhaseIndex, exerciseIndex: 0, score: 0, maxScore: AppExercises.maxScore(),
+      attemptLog: [{ exerciseId: examExercise.id, solved: true, skipped: false, attempts: 1, hintsUsed: 0, scoreDelta: 0 }],
+      currentExerciseState: null,
+    };
+
+    AppTestHooks.renderPhaseExerciseRestored(dom, state);
+
+    assert.strictEqual(dom.expectedSqlDisplay.style.display, "none");
+    assert.strictEqual(dom.feedbackOkSql.style.display, "none");
+    assert.strictEqual(dom.feedbackOkSql.textContent, "");
+    assert.strictEqual(dom.aidsRow.style.display, "none");
+    assert.strictEqual(dom.hintsWrap.style.display, "none");
+  });
+
+  it("persists a selected supported theme and keeps classic as the fallback", function () {
+    var root = { value: "", setAttribute: function (_name, value) { this.value = value; } };
+    var priorRoot = global.document.documentElement;
+    var priorStorage = global.localStorage;
+    var stored = {};
+    global.document.documentElement = root;
+    global.localStorage = { setItem: function (key, value) { stored[key] = value; } };
+    try {
+      assert.strictEqual(AppTestHooks.applyTheme("indigo", { themeSelect: {} }), "indigo");
+      assert.strictEqual(root.value, "indigo");
+      assert.strictEqual(AppTestHooks.handleThemeChange({ themeSelect: { value: "green" } }), "green");
+      assert.strictEqual(stored["simulador-consulta-theme"], "green");
+      assert.strictEqual(AppTestHooks.applyTheme("unknown", { themeSelect: {} }), "classic");
+      assert.strictEqual(root.value, "classic");
+    } finally {
+      global.document.documentElement = priorRoot;
+      global.localStorage = priorStorage;
+    }
+  });
+
+  it("exposes the in-practice export action and all requested themes", function () {
+    var index = fs.readFileSync(path.resolve(__dirname, "..", "index.html"), "utf-8");
+    assert.match(index, /id="btn-export-progress"/);
+    ["classic", "indigo", "green", "blue"].forEach(function (theme) {
+      assert.match(index, new RegExp('value="' + theme + '"'));
+    });
   });
 });

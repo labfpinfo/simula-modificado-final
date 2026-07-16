@@ -11,6 +11,25 @@
       --border: #D6CCBA; --txt: #1E1A14; --txt2: #4A4030; --txt3: #63594A;
       --blue: #0061D5; --green: #00C060; --orange: #A84800;
       --red: #D10027; --yellow: #D4A000;
+      --accent-soft: #E6F1FF; --accent-hover: #0080FF; --surface-muted: #FAFAF5;
+    }
+    :root[data-theme="indigo"] {
+      --bg: #F5F3FF; --bg-card: #FFFEFF; --bg-dark: #241C3B;
+      --border: #D8D1EE; --txt: #211A33; --txt2: #43385E; --txt3: #63587B;
+      --blue: #4F46E5; --green: #16805B; --orange: #9A4D00; --red: #C81E4C;
+      --yellow: #A16207; --accent-soft: #EDE9FE; --accent-hover: #4338CA; --surface-muted: #F8F7FF;
+    }
+    :root[data-theme="green"] {
+      --bg: #F1F5F0; --bg-card: #FCFDFB; --bg-dark: #183126;
+      --border: #C9D8CD; --txt: #17261C; --txt2: #385041; --txt3: #596D60;
+      --blue: #236B4A; --green: #16805B; --orange: #97500D; --red: #B4233C;
+      --yellow: #8A6500; --accent-soft: #E2F0E7; --accent-hover: #185C3D; --surface-muted: #F5F8F4;
+    }
+    :root[data-theme="blue"] {
+      --bg: #EFF7FF; --bg-card: #FCFEFF; --bg-dark: #102D47;
+      --border: #C9DCEB; --txt: #13293D; --txt2: #34516A; --txt3: #587087;
+      --blue: #0877B9; --green: #08795E; --orange: #9A5700; --red: #B42342;
+      --yellow: #896300; --accent-soft: #DDEFFD; --accent-hover: #05639C; --surface-muted: #F5FAFE;
     }
     body {
       font-family: system-ui, -apple-system, sans-serif;
@@ -71,7 +90,7 @@
       border-radius: 8px; font-size: 1.05rem; font-family: inherit;
       background: #fff; color: var(--txt); outline: none; transition: border-color 0.15s;
     }
-    .start-card input[type="text"]:focus { border-color: var(--blue); }
+    .start-card input[type="text"]:focus-visible { border-color: var(--blue); outline: 3px solid var(--accent-soft); }
     .start-card .name-error {
       color: var(--red); font-size: 0.85rem; margin-top: 0.4rem; display: none;
     }
@@ -80,7 +99,7 @@
       background: var(--blue); color: #fff; font-size: 1.05rem; font-weight: 600;
       cursor: pointer; font-family: inherit; transition: background 0.15s;
     }
-    .start-card button:hover { background: #0080FF; }
+    .start-card button:hover { background: var(--accent-hover); }
 
     /* Companion picker (start screen) */
     .avatar-section { margin-top: 1.1rem; text-align: left; }
@@ -91,9 +110,9 @@
       padding: 0.6rem 0.3rem; border: 1.5px solid var(--border); border-radius: 10px;
       background: #fff; cursor: pointer; font-family: inherit; transition: border-color 0.12s, background 0.12s;
     }
-    .avatar-option:hover { border-color: var(--blue); background: #F0F8FF; }
+    .avatar-option:hover { border-color: var(--blue); background: var(--accent-soft); }
     .avatar-option:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
-    .avatar-option[aria-checked="true"] { border-color: var(--blue); background: #E6F1FF; box-shadow: 0 0 0 1px var(--blue) inset; }
+    .avatar-option[aria-checked="true"] { border-color: var(--blue); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--blue) inset; }
     .avatar-option .avatar-img {
       width: 64px; height: 64px; border-radius: 50%; overflow: hidden;
       display: flex; align-items: center; justify-content: center; background: #F4EFE6;
@@ -177,7 +196,7 @@
       line-height: 1.3;
     }
     .sidebar-item:hover:not([disabled]):not(.locked) {
-      background: #E6F1FF; color: var(--blue);
+       background: var(--accent-soft); color: var(--blue);
     }
     .sidebar-item:focus-visible {
       outline: 2px solid var(--blue); outline-offset: 1px;
@@ -189,7 +208,7 @@
     .sidebar-item.solved .status { color: #0A7A3D; }
     .sidebar-item.skipped .status { color: var(--orange); }
     .sidebar-item.current {
-      background: #E6F1FF; border-color: var(--blue);
+       background: var(--accent-soft); border-color: var(--blue);
     }
     .sidebar-item.current .status { color: var(--blue); }
     .sidebar-item.locked {
@@ -214,6 +233,35 @@
     .badge-guided { background: #E6F1FF; color: var(--blue); border: 1.5px solid var(--blue); }
     .badge-semi { background: #FFF0E3; color: var(--orange); border: 1.5px solid var(--orange); }
     .badge-exam { background: #FFE8EC; color: var(--red); border: 1.5px solid var(--red); }
+
+    /* Companion unlocks are a private learning record, not a score race. */
+    .rewards-panel {
+      background: var(--surface-muted); border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.8rem 0.9rem; margin: 0 0 0.8rem;
+    }
+    .rewards-panel h2 { font-size: 0.88rem; color: var(--txt); margin-bottom: 0.2rem; }
+    .rewards-panel p { font-size: 0.78rem; color: var(--txt3); line-height: 1.45; }
+    .reward-unlock {
+      align-items: center; gap: 0.45rem; margin: 0 0 0.65rem; padding: 0.55rem 0.65rem;
+      border: 1px solid var(--green); border-radius: 8px; background: #EDFFF6; color: #0A5C28;
+    }
+    .reward-unlock-message { font-size: 0.78rem; font-weight: 700; margin-right: auto; }
+    .reward-unlock-companion { width: 32px; height: 32px; flex: 0 0 32px; }
+    .reward-unlock-companion svg, .reward-unlock-companion img { width: 100%; height: 100%; display: block; }
+    .reward-unlock-close { border: 1px solid #78C99A; border-radius: 5px; background: #fff; color: #0A5C28; padding: 0.2rem 0.45rem; font: inherit; font-size: 0.72rem; cursor: pointer; }
+    .reward-unlock-close:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    .rewards-list { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; margin-top: 0.6rem; }
+    .reward-item { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); column-gap: 0.45rem; align-items: center; padding: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); }
+    .reward-item.earned { border-color: var(--green); }
+    .reward-item.locked { opacity: 0.72; }
+    .reward-picture { grid-row: span 3; width: 42px; height: 42px; border-radius: 50%; overflow: hidden; background: var(--surface-muted); filter: grayscale(1); }
+    .reward-item.earned .reward-picture { filter: none; }
+    .reward-picture svg, .reward-picture img { width: 100%; height: 100%; display: block; }
+    .reward-item strong, .reward-item span { min-width: 0; display: block; }
+    .reward-item strong { font-size: 0.78rem; color: var(--txt2); }
+    .reward-description { font-size: 0.72rem; color: var(--txt3); line-height: 1.3; margin-top: 0.1rem; }
+    .reward-criterion { font-size: 0.69rem; color: var(--txt3); line-height: 1.3; margin-top: 0.15rem; }
+    @media (max-width: 680px) { .rewards-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
     /* Exercise card */
     .now-card {
@@ -248,7 +296,7 @@
     .aids-row button {
       font-size: 0.75rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 5px;
       cursor: pointer; border: 1.5px solid; font-family: inherit; transition: all 0.15s;
-      background: #E6F1FF; color: var(--blue); border-color: var(--blue);
+       background: var(--accent-soft); color: var(--blue); border-color: var(--blue);
     }
     .aids-row button:hover, .aids-row button.active { background: var(--blue); color: #fff; }
     .aids-box {
@@ -297,7 +345,7 @@
       background: #fff; color: var(--txt); outline: none; transition: border-color 0.15s;
       resize: vertical; min-height: 7.5rem; line-height: 1.4;
     }
-    .query-input-row textarea:focus { border-color: var(--blue); }
+    .query-input-row textarea:focus-visible { border-color: var(--blue); outline: 3px solid var(--accent-soft); }
     .query-input-row .query-actions { display: flex; flex-direction: column; gap: 0.4rem; }
     .query-input-row button {
       padding: 0.55rem 1rem; border: none; border-radius: 7px; font-size: 0.82rem;
@@ -307,8 +355,15 @@
     .query-hint {
       font-size: 0.7rem; color: var(--txt3); margin-bottom: 0.6rem; line-height: 1.4;
     }
+    .practice-export { display: flex; align-items: center; gap: 0.6rem; margin: 0.2rem 0 0.8rem; }
+    .practice-export button {
+      border: 1.5px solid var(--blue); border-radius: 7px; background: var(--accent-soft); color: var(--blue);
+      cursor: pointer; font: inherit; font-size: 0.8rem; font-weight: 600; padding: 0.42rem 0.7rem;
+    }
+    .practice-export button:hover { background: var(--blue); color: #fff; }
+    .practice-export span { color: var(--green); font-size: 0.78rem; }
     #btn-submit { background: var(--blue); color: #fff; }
-    #btn-submit:hover { background: #0080FF; }
+    #btn-submit:hover { background: var(--accent-hover); }
     #btn-submit:disabled { background: #A0B8D0; cursor: not-allowed; }
     #btn-skip { background: transparent; border: 1.5px solid var(--border); color: var(--txt3); }
     #btn-skip:hover { color: var(--txt); border-color: var(--txt2); }
@@ -355,6 +410,9 @@
       color: var(--txt3); border-color: var(--border); background: transparent;
       cursor: not-allowed; opacity: 0.6;
     }
+    button:focus-visible, select:focus-visible {
+      outline: 3px solid var(--blue); outline-offset: 2px;
+    }
 
     /* Complete screen */
     #complete-screen {
@@ -391,6 +449,13 @@
       outline-offset: 2px;
     }
     #btn-schema[aria-expanded="true"] { background: var(--blue); }
+    #theme-control {
+      position: fixed; right: 1rem; bottom: 4.4rem; z-index: 1000;
+      display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.65rem;
+      border: 1.5px solid var(--border); border-radius: 999px; background: var(--bg-card);
+      color: var(--txt2); font-size: 0.78rem; box-shadow: 0 4px 12px rgba(0,0,0,0.10);
+    }
+    #theme-select { border: 1px solid var(--border); border-radius: 5px; background: var(--bg-card); color: var(--txt); font: inherit; padding: 0.18rem; }
 
     #schema-modal[aria-hidden="true"] { display: none; }
     #schema-modal[aria-hidden="false"] { display: flex; }
@@ -608,6 +673,13 @@
 
       <div class="exercise-main">
 
+    <section class="rewards-panel" aria-labelledby="rewards-title">
+      <h2 id="rewards-title">Compañeros desbloqueables</h2>
+      <div class="reward-unlock" id="reward-unlock" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true" style="display:none"></div>
+      <p id="rewards-summary" role="status" aria-live="polite"></p>
+      <ul class="rewards-list" id="rewards-list"></ul>
+    </section>
+
     <!-- Exercise card -->
     <div id="exercise-card" class="now-card">
       <div class="card-header">
@@ -662,9 +734,13 @@
       </div>
     </div>
     <div class="query-hint">Pulsa <strong>Ctrl+Intro</strong> (o <strong>⌘+Intro</strong> en Mac) para ejecutar. <strong>Intro</strong> solo añade una nueva línea.</div>
+    <div class="practice-export">
+      <button id="btn-export-progress" type="button">Guardar y exportar progreso</button>
+      <span id="export-progress-status" role="status" aria-live="polite" aria-atomic="true"></span>
+    </div>
 
     <!-- Feedback -->
-    <div class="feedback feedback-ok" id="feedback-ok" role="status" aria-live="polite">
+    <div class="feedback feedback-ok" id="feedback-ok" role="status" aria-live="polite" aria-atomic="true">
       <div id="feedback-ok-content"></div>
       <span class="ok-sql" id="feedback-ok-sql"></span>
     </div>
@@ -701,7 +777,7 @@
       <div id="final-motivation"></div>
       <div id="final-detail"></div>
       <button id="btn-export" style="display:block;width:100%;margin-top:1rem;padding:0.6rem;border:none;border-radius:8px;background:var(--blue);color:#fff;font-size:0.9rem;font-weight:600;cursor:pointer;font-family:inherit;transition:background 0.15s">Exportar progreso (HTML)</button>
-      <div id="export-status" style="display:none;margin-top:0.4rem;font-size:0.78rem;text-align:center"></div>
+      <div id="export-status" role="status" aria-live="polite" aria-atomic="true" style="display:none;margin-top:0.4rem;font-size:0.78rem;text-align:center"></div>
       <p style="margin-top:0.6rem;font-size:0.78rem;color:var(--txt3)">
         El archivo exportado sirve como informe para el profesor y permite continuar el simulacro en otro navegador o equipo.
       </p>
@@ -716,6 +792,15 @@
           title="Ver tablas, columnas y relaciones de la base de datos">
     📋 Ver esquema
   </button>
+  <label id="theme-control" for="theme-select">
+    Tema
+    <select id="theme-select" aria-label="Tema visual">
+      <option value="classic">Clásico</option>
+      <option value="indigo">Índigo</option>
+      <option value="green">Verde</option>
+      <option value="blue">Azul</option>
+    </select>
+  </label>
 
   <div id="schema-modal" role="dialog" aria-modal="true" aria-labelledby="schema-title" aria-hidden="true">
     <div class="schema-card" role="document">

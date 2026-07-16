@@ -175,6 +175,15 @@ describe("SqlEngine", () => {
       assert.deepStrictEqual(result.columns, ["one"]);
       assert.deepStrictEqual(result.rows, [[1]]);
     });
+
+    it("preserves read-only SELECT formatting across lines and indentation", () => {
+      var result = SqlEngine.execute(
+        "\n  SELECT\n    name,\n    level\n  FROM pokemon\n  WHERE level >= 12\n  ORDER BY level DESC;\n"
+      );
+      assert.strictEqual(result.error, undefined);
+      assert.deepStrictEqual(result.columns, ["name", "level"]);
+      assert.deepStrictEqual(result.rows, [["Pikachu", 25], ["Bulbasaur", 12]]);
+    });
   });
 
   // --- SQL error ---
@@ -348,6 +357,29 @@ describe("SqlEngine", () => {
         "SELECT COUNT(*) AS cnt FROM fuertes");
       assert.ok(!result.error, "CTE query must not be rejected: " + (result.error || ""));
       assert.strictEqual(result.columns[0], "cnt");
+    });
+
+    it("allows a formatted multiline read-only CTE", () => {
+      var result = SqlEngine.execute(
+        "WITH fuertes AS (\n" +
+        "  SELECT name, level\n" +
+        "  FROM pokemon\n" +
+        "  WHERE level >= 12\n" +
+        ")\n" +
+        "SELECT name\n" +
+        "FROM fuertes\n" +
+        "ORDER BY level DESC;"
+      );
+      assert.strictEqual(result.error, undefined);
+      assert.deepStrictEqual(result.rows, [["Pikachu"], ["Bulbasaur"]]);
+    });
+
+    it("allows a recursive read-only CTE while rejecting mutations in CTEs", () => {
+      var result = SqlEngine.execute(
+        "WITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 3) SELECT n FROM nums"
+      );
+      assert.ok(!result.error, "recursive read-only CTE must remain valid: " + (result.error || ""));
+      assert.deepStrictEqual(result.rows, [[1], [2], [3]]);
     });
 
     it("does not treat a doubled quote ('') as string end (no false compound)", () => {

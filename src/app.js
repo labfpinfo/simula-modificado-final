@@ -27,6 +27,18 @@
     DEFAULT_HINT_PENALTY: 0.1,
   };
 
+  // Recognition is derived from completed learning blocks, never from volume
+  // of clicks or repeated attempts. Hints remain outside every criterion.
+  var REWARD_DEFINITIONS = [
+    { id: "u1-basics", unitPrefix: "u1", avatarId: "flarin", title: "Flarín", description: "Compañero de consultas básicas" },
+    { id: "u2-joins", unitPrefix: "u2", avatarId: "aquon", title: "Aquón", description: "Compañero de relaciones con JOIN" },
+    { id: "u3-subqueries", unitPrefix: "u3", avatarId: "folix", title: "Folix", description: "Compañero de subconsultas" },
+    { id: "recovery", avatarId: "voltis", title: "Voltis", description: "Compañero de volver a intentarlo" }
+  ];
+
+  var THEME_STORAGE_KEY = "simulador-consulta-theme";
+  var THEMES = { classic: true, indigo: true, green: true, blue: true };
+
   // ==========================================================================
   // Companions (avatars)
   //
@@ -117,31 +129,40 @@
     return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
   }
 
-  // ==========================================================================
-  // Encouragement alerts — a small motivational nudge after every query
-  // attempt, win or lose. Kept short and upbeat; never blocks progress.
-  // ==========================================================================
+  // Confirmation messages acknowledge a completed action; learning feedback
+  // remains visible until the learner explicitly changes context.
+  var TRANSIENT_MESSAGE_DURATION_MS = 5000;
+  var transientMessages = [];
 
-  var ENCOURAGE_SUCCESS = [
-    "¡Muy bien! Esa consulta es correcta. Sigue así.",
-    "¡Genial! Vas por muy buen camino.",
-    "¡Excelente! Dominas esta consulta.",
-    "¡Perfecto! Un paso más hacia el examen.",
-    "¡Bien hecho! Tu SQL va tomando forma."
-  ];
+  function _clearTransientMessages() {
+    for (var i = 0; i < transientMessages.length; i++) {
+      clearTimeout(transientMessages[i].timer);
+    }
+    transientMessages = [];
+  }
 
-  var ENCOURAGE_RETRY = [
-    "No pasa nada, ¡a la próxima seguro sale! Revisa la consulta y vuelve a intentarlo.",
-    "Casi lo tienes. Cada intento te acerca más a la solución.",
-    "¡Ánimo! Los errores también enseñan. Prueba de nuevo.",
-    "Tranquilo/a, es parte de aprender SQL. ¡Tú puedes!",
-    "Un tropiezo no es una caída. ¡Vuelve a intentarlo!"
-  ];
+  function _showTransientMessage(element, dismiss) {
+    if (!element) return;
+    for (var i = transientMessages.length - 1; i >= 0; i--) {
+      if (transientMessages[i].element === element) {
+        clearTimeout(transientMessages[i].timer);
+        transientMessages.splice(i, 1);
+      }
+    }
 
-  function _showEncouragement(success) {
-    var pool = success ? ENCOURAGE_SUCCESS : ENCOURAGE_RETRY;
-    var msg = pool[Math.floor(Math.random() * pool.length)];
-    alert(msg);
+    var entry = { element: element, timer: null };
+    entry.timer = setTimeout(function () {
+      var index = transientMessages.indexOf(entry);
+      if (index === -1) return;
+      transientMessages.splice(index, 1);
+      if (dismiss) {
+        dismiss();
+      } else {
+        element.style.display = "none";
+        element.textContent = "";
+      }
+    }, TRANSIENT_MESSAGE_DURATION_MS);
+    transientMessages.push(entry);
   }
 
   /**
@@ -171,9 +192,9 @@
   }
 
   /**
-   * Recalculate earned credit from the attempt log. An exercise earns no
-   * credit until it is solved; its own recorded penalties reduce only that
-   * exercise's credit. This also migrates legacy saved scores on restore.
+   * Recalculate earned credit and recognition from the attempt log. An
+   * exercise earns no credit until it is solved; its own recorded penalties
+   * reduce only that exercise's credit. This also migrates legacy saves.
    */
   function _recalculateScore() {
     var total = 0;
@@ -187,6 +208,96 @@
       total += entry.earnedPoints;
     }
     state.score = Math.min(state.maxScore, total);
+    _recalculateRewards();
+  }
+
+  function _recalculateRewards() {
+    var solvedById = {};
+    var recovered = false;
+    for (var i = 0; i < state.attemptLog.length; i++) {
+      var entry = state.attemptLog[i];
+      if (!entry.solved) continue;
+      solvedById[entry.exerciseId] = true;
+      if (entry.skipped === true || entry.attempts > 1) recovered = true;
+    }
+
+    var earned = [];
+    for (var ri = 0; ri < REWARD_DEFINITIONS.length; ri++) {
+      var reward = REWARD_DEFINITIONS[ri];
+      if (reward.id === "recovery") {
+        if (recovered) earned.push(reward.id);
+        continue;
+      }
+      var hasExercises = false;
+      var mastered = true;
+      for (var pi = 0; pi < AppExercises.phases.length; pi++) {
+        var phase = AppExercises.phases[pi];
+        if (phase.id.indexOf(reward.unitPrefix + "-") !== 0) continue;
+        for (var ei = 0; ei < phase.exercises.length; ei++) {
+          hasExercises = true;
+          if (!solvedById[phase.exercises[ei].id]) mastered = false;
+        }
+      }
+      if (hasExercises && mastered) earned.push(reward.id);
+    }
+    state.rewards = earned;
+  }
+
+  function _rewardById(id) {
+    for (var i = 0; i < REWARD_DEFINITIONS.length; i++) {
+      if (REWARD_DEFINITIONS[i].id === id) return REWARD_DEFINITIONS[i];
+    }
+    return null;
+  }
+
+  function _rewardProgress(reward) {
+    var solvedById = {};
+    for (var i = 0; i < state.attemptLog.length; i++) {
+      if (state.attemptLog[i].solved) solvedById[state.attemptLog[i].exerciseId] = true;
+    }
+    if (reward.id === "recovery") {
+      return {
+        earned: state.rewards.indexOf(reward.id) !== -1,
+        criterion: "Resuelve un ejercicio después de un error o de haberlo saltado."
+      };
+    }
+    var solved = 0;
+    var total = 0;
+    for (var pi = 0; pi < AppExercises.phases.length; pi++) {
+      var phase = AppExercises.phases[pi];
+      if (phase.id.indexOf(reward.unitPrefix + "-") !== 0) continue;
+      for (var ei = 0; ei < phase.exercises.length; ei++) {
+        total++;
+        if (solvedById[phase.exercises[ei].id]) solved++;
+      }
+    }
+    return {
+      earned: total > 0 && solved === total,
+      criterion: "Unidad completada: " + solved + " de " + total + " ejercicios resueltos."
+    };
+  }
+
+  function _isExamMode(mode) {
+    return mode === "exam";
+  }
+
+  function _applyTheme(theme) {
+    var selected = THEMES[theme] ? theme : "classic";
+    document.documentElement.setAttribute("data-theme", selected);
+    if (dom.themeSelect) dom.themeSelect.value = selected;
+    return selected;
+  }
+
+  function _restoreTheme() {
+    var saved = "";
+    try { saved = localStorage.getItem(THEME_STORAGE_KEY) || ""; } catch (_e) {}
+    return _applyTheme(saved);
+  }
+
+  function handleThemeChange() {
+    var selected = _applyTheme(dom.themeSelect && dom.themeSelect.value);
+    try { localStorage.setItem(THEME_STORAGE_KEY, selected); } catch (_e) {}
+    return selected;
   }
 
   /** Inner markup for an avatar's picture (image file if provided, else SVG). */
@@ -229,6 +340,9 @@
 
     /** @type {Array} Log of all attempts across all exercises */
     attemptLog: [],
+
+    /** @type {Array<string>} Recognition ids derived from meaningful mastery */
+    rewards: [],
 
     /** @type {Object|null} Exercise-level state (for current exercise) */
     currentExerciseState: null,
@@ -393,6 +507,7 @@
   // ==========================================================================
 
   function showStartView() {
+    _clearTransientMessages();
     dom.startScreen.style.display = "flex";
     dom.exerciseArea.style.display = "none";
     dom.completeScreen.style.display = "none";
@@ -400,6 +515,8 @@
   }
 
   function showExerciseView() {
+    _clearTransientMessages();
+    _dismissRewardUnlock();
     dom.startScreen.style.display = "none";
     dom.exerciseArea.style.display = "block";
     dom.completeScreen.style.display = "none";
@@ -413,6 +530,8 @@
    * attemptLog entries or reset per-exercise state (already in place).
    */
   function showExerciseViewRestored() {
+    _clearTransientMessages();
+    _dismissRewardUnlock();
     dom.startScreen.style.display = "none";
     dom.exerciseArea.style.display = "block";
     dom.completeScreen.style.display = "none";
@@ -421,6 +540,8 @@
   }
 
   function showCompleteView() {
+    _clearTransientMessages();
+    _dismissRewardUnlock();
     dom.startScreen.style.display = "none";
     dom.exerciseArea.style.display = "none";
     dom.completeScreen.style.display = "block";
@@ -521,6 +642,79 @@
       dom.progressTrack.setAttribute("aria-valuetext",
         "Ejercicio " + exIdx + " de " + exTotal + " — " + pct + "%");
     }
+    renderRewards();
+  }
+
+  function renderRewards() {
+    if (!dom.rewardsSummary || !dom.rewardsList) return;
+    var rewards = state.rewards || [];
+    dom.rewardsList.textContent = "";
+    dom.rewardsSummary.textContent = rewards.length === 0
+      ? "Los compañeros se desbloquean con dominio real, no por llegar a una unidad. Las pistas no los bloquean."
+      : rewards.length + " compañero" + (rewards.length === 1 ? " desbloqueado." : "s desbloqueados.");
+
+    for (var i = 0; i < REWARD_DEFINITIONS.length; i++) {
+      var reward = REWARD_DEFINITIONS[i];
+      var progress = _rewardProgress(reward);
+      var avatar = _avatarById(reward.avatarId);
+      var item = document.createElement("li");
+      item.className = "reward-item " + (progress.earned ? "earned" : "locked");
+      item.setAttribute("data-reward-id", reward.id);
+      var picture = document.createElement("span");
+      picture.className = "reward-picture";
+      picture.setAttribute("aria-hidden", "true");
+      picture.innerHTML = _avatarPicture(avatar);
+      var title = document.createElement("strong");
+      title.textContent = reward.title;
+      var description = document.createElement("span");
+      description.className = "reward-description";
+      description.textContent = progress.earned ? reward.description : "Bloqueado";
+      var criterion = document.createElement("span");
+      criterion.className = "reward-criterion";
+      criterion.textContent = progress.criterion;
+      item.appendChild(picture);
+      item.appendChild(title);
+      item.appendChild(description);
+      item.appendChild(criterion);
+      dom.rewardsList.appendChild(item);
+    }
+  }
+
+  function _dismissRewardUnlock() {
+    if (!dom.rewardUnlock) return;
+    dom.rewardUnlock.style.display = "none";
+    dom.rewardUnlock.textContent = "";
+    dom.rewardUnlock.setAttribute("aria-hidden", "true");
+  }
+
+  function _showRewardUnlock(rewardIds) {
+    if (!dom.rewardUnlock || !rewardIds || rewardIds.length === 0) return;
+    dom.rewardUnlock.textContent = "";
+    dom.rewardUnlock.style.display = "flex";
+    dom.rewardUnlock.setAttribute("aria-hidden", "false");
+    var message = document.createElement("span");
+    message.className = "reward-unlock-message";
+    message.textContent = rewardIds.length === 1
+      ? "Nuevo compañero desbloqueado"
+      : rewardIds.length + " nuevos compañeros desbloqueados";
+    dom.rewardUnlock.appendChild(message);
+    for (var i = 0; i < rewardIds.length; i++) {
+      var reward = _rewardById(rewardIds[i]);
+      if (!reward) continue;
+      var avatar = _avatarById(reward.avatarId);
+      var companion = document.createElement("span");
+      companion.className = "reward-unlock-companion";
+      companion.setAttribute("aria-label", reward.title);
+      companion.innerHTML = _avatarPicture(avatar);
+      dom.rewardUnlock.appendChild(companion);
+    }
+    var close = document.createElement("button");
+    close.type = "button";
+    close.className = "reward-unlock-close";
+    close.textContent = "Cerrar";
+    close.addEventListener("click", function () { _dismissRewardUnlock(); });
+    dom.rewardUnlock.appendChild(close);
+    _showTransientMessage(dom.rewardUnlock, _dismissRewardUnlock);
   }
 
   // ==========================================================================
@@ -560,6 +754,7 @@
   }
 
   function renderPhaseExercise() {
+    _clearTransientMessages();
     var phase = AppExercises.phases[state.phaseIndex];
     var ex = phase.exercises[state.exerciseIndex];
     if (!ex) return;
@@ -625,7 +820,7 @@
     // pero la clase trabaja con MySQL — cuando la sintaxis difiere, el
     // ejercicio lo aclara aquí para que el alumno repase AMBAS formas.
     if (dom.mysqlNoteBox && dom.mysqlNoteText) {
-      if (ex.mysqlNote) {
+      if (!_isExamMode(phase.mode) && ex.mysqlNote) {
         dom.mysqlNoteText.innerHTML = ex.mysqlNote;
         dom.mysqlNoteBox.style.display = "block";
       } else {
@@ -650,8 +845,8 @@
       dom.feedbackOk.style.display = "block";
       dom.feedbackOk.classList.remove("feedback-skipped");
       dom.feedbackOkContent.textContent = "✓ ¡Correcto! La consulta produjo los resultados esperados.";
-      dom.feedbackOkSql.style.display = "";
-      dom.feedbackOkSql.textContent = ex.expectedSql;
+      dom.feedbackOkSql.style.display = _isExamMode(phase.mode) ? "none" : "";
+      dom.feedbackOkSql.textContent = _isExamMode(phase.mode) ? "" : ex.expectedSql;
       dom.feedbackErr.style.display = "none";
       dom.resultDisplay.style.display = "none";
       dom.queryInput.value = "";
@@ -695,7 +890,7 @@
     }
 
     // Aids (guided)
-    if (ex.aids) {
+    if (ex.aids && !_isExamMode(phase.mode)) {
       dom.aidsContext.innerHTML = (ex.aids.context || "");
       dom.aidsGuide.innerHTML = (ex.aids.guide || "");
       dom.aidsContextBox.style.display = "none";
@@ -720,7 +915,7 @@
     }
 
     // Hints (semi-guided / exam)
-    if (ex.hints && ex.hints.length > 0) {
+    if (!_isExamMode(phase.mode) && ex.hints && ex.hints.length > 0) {
       dom.hintsWrap.style.display = "flex";
       dom.hintsWrap.innerHTML = "";
       for (var i = 0; i < ex.hints.length; i++) {
@@ -759,6 +954,7 @@
    * transient per-exercise state from the last attemptLog entry if needed.
    */
   function renderPhaseExerciseRestored() {
+    _clearTransientMessages();
     var phase = AppExercises.phases[state.phaseIndex];
     var ex = phase.exercises[state.exerciseIndex];
     if (!ex) return;
@@ -820,7 +1016,7 @@
     // pero la clase trabaja con MySQL — cuando la sintaxis difiere, el
     // ejercicio lo aclara aquí para que el alumno repase AMBAS formas.
     if (dom.mysqlNoteBox && dom.mysqlNoteText) {
-      if (ex.mysqlNote) {
+      if (!_isExamMode(phase.mode) && ex.mysqlNote) {
         dom.mysqlNoteText.innerHTML = ex.mysqlNote;
         dom.mysqlNoteBox.style.display = "block";
       } else {
@@ -844,8 +1040,8 @@
       dom.feedbackOk.style.display = "block";
       dom.feedbackOk.classList.remove("feedback-skipped");
       dom.feedbackOkContent.textContent = "✓ ¡Correcto! La consulta produjo los resultados esperados.";
-      dom.feedbackOkSql.style.display = "";
-      dom.feedbackOkSql.textContent = ex.expectedSql;
+      dom.feedbackOkSql.style.display = _isExamMode(phase.mode) ? "none" : "";
+      dom.feedbackOkSql.textContent = _isExamMode(phase.mode) ? "" : ex.expectedSql;
       dom.feedbackErr.style.display = "none";
       dom.resultDisplay.style.display = "none";
       dom.queryInput.value = "";
@@ -887,7 +1083,7 @@
     }
 
     // Aids (guided)
-    if (ex.aids) {
+    if (ex.aids && !_isExamMode(phase.mode)) {
       dom.aidsContext.innerHTML = (ex.aids.context || "");
       dom.aidsGuide.innerHTML = (ex.aids.guide || "");
       dom.aidsContextBox.style.display = "none";
@@ -911,7 +1107,7 @@
     }
 
     // Hints — restore used hints to "used" state
-    if (ex.hints && ex.hints.length > 0) {
+    if (!_isExamMode(phase.mode) && ex.hints && ex.hints.length > 0) {
       dom.hintsWrap.style.display = "flex";
       dom.hintsWrap.innerHTML = "";
       var usedHintIndices = state.currentExerciseState.hintsUsed;
@@ -1016,13 +1212,16 @@
   }
 
   function renderFeedback(matched, result, exSql, message, studentResult) {
+    _clearTransientMessages();
     dom.feedbackOk.style.display = "none";
     dom.feedbackErr.style.display = "none";
     dom.resultDisplay.style.display = "none";
     // Reset the feedback-ok styling so a fresh submit (after skip or
     // after a wrong answer) doesn't keep the "skipped" orange variant.
     dom.feedbackOk.classList.remove("feedback-skipped");
-    dom.feedbackOkSql.style.display = "";
+    var phase = AppExercises.phases[state.phaseIndex];
+    var isExam = phase && _isExamMode(phase.mode);
+    dom.feedbackOkSql.style.display = isExam ? "none" : "";
     dom.feedbackOkSql.textContent = "";
     dom.queryInput.disabled = true;
     dom.btnSubmit.disabled = true;
@@ -1031,9 +1230,15 @@
     if (matched) {
       dom.feedbackOk.style.display = "block";
       dom.feedbackOkContent.textContent = "✓ ¡Correcto! La consulta produjo los resultados esperados.";
-      dom.feedbackOkSql.textContent = exSql;
+      dom.feedbackOkSql.textContent = isExam ? "" : exSql;
       dom.btnNext.style.display = "inline-block";
       state.currentExerciseState.solved = true;
+      _showTransientMessage(dom.feedbackOk, function () {
+        dom.feedbackOk.style.display = "none";
+        dom.feedbackOkContent.textContent = "";
+        dom.feedbackOkSql.textContent = "";
+        dom.feedbackOkSql.style.display = "none";
+      });
     } else {
       dom.feedbackErr.style.display = "block";
       var errMsg = result && result.error
@@ -1138,8 +1343,8 @@
   // ==========================================================================
 
   function handleSubmit() {
-    var sql = dom.queryInput.value.trim();
-    if (!sql) return;
+    var sql = dom.queryInput.value;
+    if (!sql.trim()) return;
 
     var ex = AppExercises.phases[state.phaseIndex].exercises[state.exerciseIndex];
     if (!ex) return;
@@ -1166,7 +1371,6 @@
       renderFeedback(false, studentResult, ex.expectedSql,
         "Error SQL: " + studentResult.error + ". Revisa la sintaxis e inténtalo de nuevo.");
       renderMenu();
-      _showEncouragement(false);
       return;
     }
 
@@ -1186,6 +1390,7 @@
     });
 
     if (comparison.matched) {
+      var rewardsBefore = state.rewards.slice();
       state.currentExerciseState.solved = true;
       var curLog = _getCurrentLogEntry();
       if (curLog) {
@@ -1202,7 +1407,10 @@
       renderMenu();
       saveCurrentProgress();
       renderFeedback(true, null, ex.expectedSql, null, studentResult);
-      _showEncouragement(true);
+      var newlyUnlocked = state.rewards.filter(function (id) {
+        return rewardsBefore.indexOf(id) === -1;
+      });
+      _showRewardUnlock(newlyUnlocked);
     } else {
       // Penalize wrong answer
       var penalty = ex.scoring && ex.scoring.errorPenalty ? ex.scoring.errorPenalty : SCORE.DEFAULT_ERROR_PENALTY;
@@ -1231,7 +1439,6 @@
       }
       renderFeedback(false, null, ex.expectedSql, msg, studentResult);
       renderMenu();
-      _showEncouragement(false);
     }
   }
 
@@ -1393,6 +1600,7 @@
     state.maxScore = AppExercises.maxScore();
     state.score = 0;
     state.attemptLog = [];
+    state.rewards = [];
     state.view = "exercises";
 
     // Persist new session immediately
@@ -1418,6 +1626,7 @@
       score: state.score,
       maxScore: state.maxScore,
       attemptLog: state.attemptLog,
+      rewards: state.rewards,
       view: state.view,
       menuCollapsed: state.menuCollapsed === true,
     };
@@ -1546,10 +1755,10 @@
   }
 
   /** Export current progress as teacher-review HTML and trigger download. */
-  function handleExport() {
+  function handleExport(statusElement) {
     if (!window.ExportPackage) return;
 
-    var exportStatus = dom.exportStatus;
+    var exportStatus = statusElement || dom.exportStatus;
     if (exportStatus) {
       exportStatus.style.display = "none";
       exportStatus.textContent = "";
@@ -1567,6 +1776,7 @@
         exportStatus.style.display = "block";
         exportStatus.style.color = "#00C060";
         exportStatus.textContent = "✓ Exportado correctamente.";
+        _showTransientMessage(exportStatus);
       }
     } catch (err) {
       if (exportStatus) {
@@ -1614,7 +1824,7 @@
       if (_restoreFromProgress(progress)) {
         saveCurrentProgress();
         dom.importOk.style.display = "block";
-        dom.importOk.textContent = "Progreso importado correctamente.";
+        dom.importOk.textContent = "Progreso importado correctamente. Podés continuar desde el ejercicio guardado.";
       }
     }).catch(function (err) {
       dom.importError.style.display = "block";
@@ -2179,6 +2389,9 @@
     dom.statusScore = document.getElementById("status-score");
     dom.progressFill = document.getElementById("progress-fill");
     dom.progressTrack = document.getElementById("progress-track");
+    dom.rewardsSummary = document.getElementById("rewards-summary");
+    dom.rewardsList = document.getElementById("rewards-list");
+    dom.rewardUnlock = document.getElementById("reward-unlock");
     dom.exerciseCard = document.getElementById("exercise-card");
     dom.modeBadge = document.getElementById("mode-badge");
     dom.exerciseTitle = document.getElementById("exercise-title");
@@ -2226,6 +2439,9 @@
     dom.importOk = document.getElementById("import-ok");
     dom.btnExport = document.getElementById("btn-export");
     dom.exportStatus = document.getElementById("export-status");
+    dom.btnExportProgress = document.getElementById("btn-export-progress");
+    dom.exportProgressStatus = document.getElementById("export-progress-status");
+    dom.themeSelect = document.getElementById("theme-select");
     dom.storageWarning = document.getElementById("storage-warning");
 
     // Schema reference modal
@@ -2253,6 +2469,7 @@
     if (loadingEl) loadingEl.style.display = "block";
 
     // Preflight: fail fast if required APIs are missing
+    _restoreTheme();
     var preflightErr = preflightCheck();
     if (preflightErr) {
       if (loadingEl) loadingEl.style.display = "none";
@@ -2332,7 +2549,15 @@
 
         // Export button
         if (dom.btnExport) {
-          dom.btnExport.addEventListener("click", handleExport);
+          dom.btnExport.addEventListener("click", function () { handleExport(); });
+        }
+        if (dom.btnExportProgress) {
+          dom.btnExportProgress.addEventListener("click", function () {
+            handleExport(dom.exportProgressStatus);
+          });
+        }
+        if (dom.themeSelect) {
+          dom.themeSelect.addEventListener("change", handleThemeChange);
         }
 
         // Import file handler
@@ -2549,6 +2774,52 @@
         }
       },
 
+      /** Recalculate mastery-based recognition with injected attempt history. */
+      recalculateRewards: function (stateOverride) {
+        var savedState = state;
+        try {
+          if (stateOverride) state = stateOverride;
+          _recalculateRewards();
+          return state.rewards;
+        } finally {
+          state = savedState;
+        }
+      },
+
+      /** Render learner-facing recognition with injected DOM and state. */
+      renderRewards: function (domOverride, stateOverride) {
+        var savedDom = dom;
+        var savedState = state;
+        try {
+          if (domOverride) dom = domOverride;
+          if (stateOverride) state = stateOverride;
+          renderRewards();
+        } finally {
+          dom = savedDom;
+          state = savedState;
+        }
+      },
+
+      showRewardUnlock: function (domOverride, rewardIds) {
+        var savedDom = dom;
+        try {
+          if (domOverride) dom = domOverride;
+          _showRewardUnlock(rewardIds);
+        } finally {
+          dom = savedDom;
+        }
+      },
+
+      dismissRewardUnlock: function (domOverride) {
+        var savedDom = dom;
+        try {
+          if (domOverride) dom = domOverride;
+          _dismissRewardUnlock();
+        } finally {
+          dom = savedDom;
+        }
+      },
+
       /** Restore saved progress with injected state and DOM for regression tests. */
       restoreFromProgress: function (domOverride, stateOverride, progress) {
         var savedDom = dom;
@@ -2576,6 +2847,36 @@
           state = savedState;
           dom = savedDom;
         }
+      },
+
+      applyTheme: function (theme, domOverride) {
+        var savedDom = dom;
+        try {
+          if (domOverride) dom = domOverride;
+          return _applyTheme(theme);
+        } finally {
+          dom = savedDom;
+        }
+      },
+
+      handleThemeChange: function (domOverride) {
+        var savedDom = dom;
+        try {
+          if (domOverride) dom = domOverride;
+          return handleThemeChange();
+        } finally {
+          dom = savedDom;
+        }
+      },
+
+      /** Schedule a transient confirmation dismissal for deterministic timer tests. */
+      showTransientMessage: function (element, dismiss) {
+        _showTransientMessage(element, dismiss);
+      },
+
+      /** Cancel pending transient confirmation dismissals for deterministic timer tests. */
+      clearTransientMessages: function () {
+        _clearTransientMessages();
       },
 
       /** Show persistence recovery guidance with an injected DOM and store. */
@@ -2938,6 +3239,8 @@
       statusStep: el(),
       statusScore: el(),
       progressFill: el(),
+      rewardsSummary: el(),
+      rewardsList: el(),
       studentNameInput: el(),
       btnStart: el(),
       nameError: el(),
@@ -2984,6 +3287,9 @@
       finalDetail: el(),
       btnExport: el(),
       exportStatus: el(),
+      btnExportProgress: el(),
+      exportProgressStatus: el(),
+      themeSelect: el(),
       storageWarning: el(),
       btnSchema: el(),
       schemaModal: el(),

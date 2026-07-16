@@ -10,12 +10,33 @@ que se ejecuta dentro del propio navegador.
 1. Descarga la carpeta `dist/` (o el ZIP que te pase el profesor).
 2. Descomprime y haz **doble clic en `index.html`**.
 3. Escribe tu nombre, elige compañero y resuelve los ejercicios.
-4. Al terminar, pulsa **Exportar** y entrega el archivo HTML generado.
+4. Cuando quieras continuar en casa, pulsa **Guardar y exportar progreso** durante la práctica y guarda el HTML generado. Al terminar, también podés exportarlo desde la pantalla final.
+
+Después de cada intento, el simulador mantiene el resultado y una sugerencia
+de siguiente paso junto al ejercicio. Los errores no interrumpen la consulta:
+podés corregirla en el mismo sitio y, fuera del modo examen, pedir una pista
+progresiva si la necesitás.
+
+Las confirmaciones breves, como una respuesta correcta o una exportación
+realizada, se ocultan solas tras unos cinco segundos. Los errores, las pistas
+y las orientaciones para el siguiente paso permanecen visibles hasta que
+cambies de ejercicio o actúes de nuevo.
 
 Tu progreso se guarda automáticamente en el navegador: si cierras la
 pestaña, al volver a abrir `index.html` podrás continuar donde lo dejaste.
-El archivo exportado también sirve para continuar en otro ordenador
-(botón *Importar* en la pantalla de inicio).
+El archivo exportado también sirve para continuar en otro ordenador:
+usa *Importar progreso* en la pantalla de inicio y el simulador retomará el
+ejercicio, intentos y ejercicios saltados guardados. Podés elegir los temas
+Clásico, Índigo, Verde o Azul desde el control fijo de tema; la elección se
+guarda en ese navegador.
+
+El área **Compañeros desbloqueables** muestra cuatro compañeros visuales que
+se consiguen al completar cada unidad (consultas básicas, JOINs y subconsultas)
+o al resolver un ejercicio tras un error o un salto. Cada compañero bloqueado
+indica el avance real de su unidad, así que llegar a U2 no equivale a completar
+U1. No hay clasificaciones, rachas ni límites de reconocimientos. Los
+compañeros usan el arte SVG local del simulador, sin imágenes remotas, y se
+recalculan al continuar o exportar/importar el progreso.
 
 ## Para el profesor
 
